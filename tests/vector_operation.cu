@@ -249,37 +249,6 @@ __global__ void vectorNormL2Squared(const float* a, float* result, int n) {
     }
 }
 
-// ============================================================================
-// Matrix-Vector Operations (for neural networks)
-// ============================================================================
-
-// Matrix-vector multiplication: y = A * x
-// A is m x n matrix (row-major), x is n-vector, y is m-vector
-__global__ void matVecMul(const float* A, const float* x, float* y, int m, int n) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row < m) {
-        float sum = 0.0f;
-        for (int col = 0; col < n; col++) {
-            sum += A[row * n + col] * x[col];
-        }
-        y[row] = sum;
-    }
-}
-
-// Matrix-vector multiplication with bias: y = A * x + b
-__global__ void matVecMulBias(const float* A, const float* x, const float* b, 
-                               float* y, int m, int n) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row < m) {
-        float sum = 0.0f;
-        for (int col = 0; col < n; col++) {
-            sum += A[row * n + col] * x[col];
-        }
-        y[row] = sum + b[row];
-    }
-}
 
 // ============================================================================
 // Utility Functions
