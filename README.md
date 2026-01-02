@@ -35,4 +35,4 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 
 ---
 
-**Happy GPU programming!** 🚀
+**Happy GPU programming!**
