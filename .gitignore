@@ -1,0 +1,51 @@
+# .gitignore for bare_NN
+
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# Compiled binaries
+*.exe
+*.out
+*.app
+*.ptx
+*.cubin
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Visual Studio
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Object files
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+
+# Profiling data
+*.qdrep
+*.nsys-rep
+*.nvvp
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
