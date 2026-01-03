@@ -40,7 +40,6 @@ Makefile
 *.a
 *.lib
 
-*.ptx
 
 # Profiling data
 *.qdrep
