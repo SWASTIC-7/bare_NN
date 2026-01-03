@@ -1,0 +1,90 @@
+.version 8.0
+.target sm_70
+.address_size 64
+
+.visible .entry ptx_mul_matrix_complex (
+          .param .u64 c_addr,
+          .param .u64 a_addr,
+          .param .u64 b_addr,
+          .param .u32 M,
+          .param .u32 N,
+          .param .u32 K)
+{
+ .reg .pred p;
+ .reg .u64 c_ptr, a_ptr, b_ptr, addr_a, addr_b, addr_c;
+ .reg .u32 M_val, N_val, K_val;
+ .reg .u32 idx, y, x, k;
+ .reg .u32 a_idx, b_idx;
+ .reg .f32 a_r, a_i, b_r, b_i, s_f_r, s_f_i;
+ .reg .f32 temp1, temp2;
+ .reg .u32 total_size;
+ .reg .u32 ctaid, ntid, tid;
+ 
+ ld.param.u64        c_ptr, [c_addr];
+ ld.param.u64        a_ptr, [a_addr]; 
+ ld.param.u64        b_ptr, [b_addr]; 
+ ld.param.u32        M_val, [M]; 
+ ld.param.u32        N_val, [N]; 
+ ld.param.u32        K_val, [K]; 
+ 
+ mov.u32             ctaid, %ctaid.x; 
+ mov.u32             ntid, %ntid.x; 
+ mov.u32             tid, %tid.x;
+ mad.lo.u32          idx, ctaid, ntid, tid;
+ 
+ mul.lo.u32          total_size, M_val, N_val;
+ setp.ge.u32         p, idx, total_size;
+ @p ret;
+ 
+ div.u32             y, idx, N_val;
+ rem.u32             x, idx, N_val;
+ 
+ mov.f32             s_f_r, 0.0;
+ mov.f32             s_f_i, 0.0;
+ 
+ mov.u32             k, 0;
+ 
+loop_start:
+ setp.ge.u32         p, k, K_val;
+ @p bra              loop_end;
+ 
+ // Load A[y * K + k]
+ mad.lo.u32          a_idx, y, K_val, k;
+ cvt.u64.u32         addr_a, a_idx;
+ shl.b64             addr_a, addr_a, 3;  
+ add.u64             addr_a, a_ptr, addr_a;
+ ld.global.v2.f32    {a_r, a_i}, [addr_a];
+ 
+ // Load B[k * N + x]
+ mad.lo.u32          b_idx, k, N_val, x;
+ cvt.u64.u32         addr_b, b_idx;
+ shl.b64             addr_b, addr_b, 3;  
+ add.u64             addr_b, b_ptr, addr_b;
+ ld.global.v2.f32    {b_r, b_i}, [addr_b];
+ 
+ // Complex multiplication: (a_r + a_i*i) * (b_r + b_i*i)
+ // Real part: a_r * b_r - a_i * b_i
+ mul.rn.f32          temp1, a_r, b_r;
+ mul.rn.f32          temp2, a_i, b_i;
+ sub.f32             temp1, temp1, temp2;
+ add.f32             s_f_r, s_f_r, temp1;
+ 
+ // Imaginary part: a_r * b_i + a_i * b_r
+ mul.rn.f32          temp1, a_r, b_i;
+ mul.rn.f32          temp2, a_i, b_r;
+ add.f32             temp1, temp1, temp2;
+ add.f32             s_f_i, s_f_i, temp1;
+ 
+ // k++
+ add.u32             k, k, 1;
+ bra                 loop_start;
+ 
+loop_end:
+ // Store result C[idx]
+ cvt.u64.u32         addr_c, idx;
+ shl.b64             addr_c, addr_c, 3;
+ add.u64             addr_c, c_ptr, addr_c;
+ st.global.v2.f32    [addr_c], {s_f_r, s_f_i};
+
+ ret;
+}

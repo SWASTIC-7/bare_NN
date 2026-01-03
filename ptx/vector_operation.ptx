@@ -1,0 +1,258 @@
+.version 7.0
+.target sm_70
+.address_size 64
+
+
+//element wise addition
+.visible .entry vectorAdd(
+    .param .u64 d_a,
+	.param .u64 d_b,
+	.param .u64 d_c,
+	.param .u32 n
+)
+{
+    .reg .pred 	p1;
+	.reg .f32 	val_a, val_b, sum;
+	.reg .u64 	rd_a, rd_b, rd_c;
+	.reg .u64 	addr_a, addr_b, addr_c;
+	.reg .u64 	offset, ptr_a, ptr_b, ptr_c;
+    .reg .u32 	ctaid, ntid, tid, idx;
+    .reg .u32 	total_size;
+
+    ld.param.u64 	rd_a, [d_a];
+	ld.param.u64 	rd_b, [d_b];
+	ld.param.u64 	rd_c, [d_c];
+	ld.param.u32 	total_size, [n];
+    mov.u32 	ctaid, %ctaid.x;
+	mov.u32 	ntid, %ntid.x;
+	mov.u32 	tid, %tid.x;
+	mad.lo.u32 	idx, ctaid, ntid, tid;
+    setp.ge.u32 	p1, idx, total_size;
+	@p1 bra 	$PASS_ADD;
+
+	cvta.to.global.u64 	addr_a, rd_a;
+	mul.wide.u32 	offset, idx, 4;
+	add.u64 	ptr_a, addr_a, offset;
+	cvta.to.global.u64 	addr_b, rd_b;
+	add.u64 	ptr_b, addr_b, offset;
+	ld.global.f32 	val_b, [ptr_b];
+	ld.global.f32 	val_a, [ptr_a];
+	add.f32 	sum, val_a, val_b;
+	cvta.to.global.u64 	addr_c, rd_c;
+	add.u64 	ptr_c, addr_c, offset;
+	st.global.f32 	[ptr_c], sum;
+
+$PASS_ADD:
+	ret;
+}
+
+//element wise subtraction
+.visible .entry vectorSub(
+    .param .u64 d_a,
+	.param .u64 d_b,
+	.param .u64 d_c,
+	.param .u32 n
+)
+{
+    .reg .pred 	p1;
+	.reg .f32 	val_a, val_b, sub;
+	.reg .u64 	rd_a, rd_b, rd_c;
+	.reg .u64 	addr_a, addr_b, addr_c;
+	.reg .u64 	offset, ptr_a, ptr_b, ptr_c;
+    .reg .u32 	ctaid, ntid, tid, idx;
+    .reg .u32 	total_size;
+
+    ld.param.u64 	rd_a, [d_a];
+	ld.param.u64 	rd_b, [d_b];
+	ld.param.u64 	rd_c, [d_c];
+	ld.param.u32 	total_size, [n];
+    mov.u32 	ctaid, %ctaid.x;
+	mov.u32 	ntid, %ntid.x;
+	mov.u32 	tid, %tid.x;
+	mad.lo.u32 	idx, ctaid, ntid, tid;
+    setp.ge.u32 	p1, idx, total_size;
+	@p1 bra 	$PASS_SUB;
+
+	cvta.to.global.u64 	addr_a, rd_a;
+	mul.wide.u32 	offset, idx, 4;
+	add.u64 	ptr_a, addr_a, offset;
+	cvta.to.global.u64 	addr_b, rd_b;
+	add.u64 	ptr_b, addr_b, offset;
+	ld.global.f32 	val_b, [ptr_b];
+	ld.global.f32 	val_a, [ptr_a];
+	sub.f32 	sub, val_a, val_b;
+	cvta.to.global.u64 	addr_c, rd_c;
+	add.u64 	ptr_c, addr_c, offset;
+	st.global.f32 	[ptr_c], sub;
+
+$PASS_SUB:
+	ret;
+}
+
+//element wise multiplication
+.visible .entry vectorMul(
+    .param .u64 d_a,
+	.param .u64 d_b,
+	.param .u64 d_c,
+	.param .u32 n
+)
+{
+    .reg .pred 	p1;
+	.reg .f32 	val_a, val_b, mul;
+	.reg .u64 	rd_a, rd_b, rd_c;
+	.reg .u64 	addr_a, addr_b, addr_c;
+	.reg .u64 	offset, ptr_a, ptr_b, ptr_c;
+    .reg .u32 	ctaid, ntid, tid, idx;
+    .reg .u32 	total_size;
+
+    ld.param.u64 	rd_a, [d_a];
+	ld.param.u64 	rd_b, [d_b];
+	ld.param.u64 	rd_c, [d_c];
+	ld.param.u32 	total_size, [n];
+    mov.u32 	ctaid, %ctaid.x;
+	mov.u32 	ntid, %ntid.x;
+	mov.u32 	tid, %tid.x;
+	mad.lo.u32 	idx, ctaid, ntid, tid;
+    setp.ge.u32 	p1, idx, total_size;
+	@p1 bra 	$PASS_MUL;
+
+	cvta.to.global.u64 	addr_a, rd_a;
+	mul.wide.u32 	offset, idx, 4;
+	add.u64 	ptr_a, addr_a, offset;
+	cvta.to.global.u64 	addr_b, rd_b;
+	add.u64 	ptr_b, addr_b, offset;
+	ld.global.f32 	val_b, [ptr_b];
+	ld.global.f32 	val_a, [ptr_a];
+	mul.f32 	mul, val_a, val_b;
+	cvta.to.global.u64 	addr_c, rd_c;
+	add.u64 	ptr_c, addr_c, offset;
+	st.global.f32 	[ptr_c], mul;
+
+$PASS_MUL:
+	ret;
+}
+
+//element wise division
+.visible .entry vectorDiv(
+    .param .u64 d_a,
+	.param .u64 d_b,
+	.param .u64 d_c,
+	.param .u32 n
+)
+{
+    .reg .pred 	p1, p2;
+	.reg .f32 	val_a, val_b, div;
+	.reg .u64 	rd_a, rd_b, rd_c;
+	.reg .u64 	addr_a, addr_b, addr_c;
+	.reg .u64 	offset, ptr_a, ptr_b, ptr_c;
+    .reg .u32 	ctaid, ntid, tid, idx;
+    .reg .u32 	total_size;
+
+    ld.param.u64 	rd_a, [d_a];
+	ld.param.u64 	rd_b, [d_b];
+	ld.param.u64 	rd_c, [d_c];
+	ld.param.u32 	total_size, [n];
+    mov.u32 	ctaid, %ctaid.x;
+	mov.u32 	ntid, %ntid.x;
+	mov.u32 	tid, %tid.x;
+	mad.lo.u32 	idx, ctaid, ntid, tid;
+    setp.ge.u32 	p1, idx, total_size;
+	@p1 bra 	$PASS_DIV;
+
+	cvta.to.global.u64 	addr_a, rd_a;
+	mul.wide.u32 	offset, idx, 4;
+	add.u64 	ptr_a, addr_a, offset;
+	cvta.to.global.u64 	addr_b, rd_b;
+	add.u64 	ptr_b, addr_b, offset;
+	ld.global.f32 	val_b, [ptr_b];
+	ld.global.f32 	val_a, [ptr_a];
+    setp.ne.f32 	p2, val_b, 0.0;
+    @p2 bra 	$PASS_DIV;
+	div.rn.f32 	div, val_a, val_b;
+	cvta.to.global.u64 	addr_c, rd_c;
+	add.u64 	ptr_c, addr_c, offset;
+	st.global.f32 	[ptr_c], div;
+
+$PASS_DIV:
+	ret;
+}
+
+//element wise scalar addition
+.visible .entry vectorScalarAdd(
+    .param .u64 d_a,
+	.param .f32 scalar,
+	.param .u64 d_c,
+	.param .u32 n
+)
+{
+    .reg .pred 	p1;
+	.reg .f32 	val_a, scalar_val, sum;
+	.reg .u64 	rd_a, rd_c;
+	.reg .u64 	addr_a, addr_c;
+	.reg .u64 	offset, ptr_a, ptr_c;
+    .reg .u32 	ctaid, ntid, tid, idx;
+    .reg .u32 	total_size;
+
+    ld.param.u64 	rd_a, [d_a];
+	ld.param.f32 	scalar_val, [scalar];
+	ld.param.u64 	rd_c, [d_c];
+	ld.param.u32 	total_size, [n];
+    mov.u32 	ctaid, %ctaid.x;
+	mov.u32 	ntid, %ntid.x;
+	mov.u32 	tid, %tid.x;
+	mad.lo.u32 	idx, ctaid, ntid, tid;
+    setp.ge.u32 	p1, idx, total_size;
+	@p1 bra 	$PASS_SCALAR_ADD;
+
+	cvta.to.global.u64 	addr_a, rd_a;
+	mul.wide.u32 	offset, idx, 4;
+	add.u64 	ptr_a, addr_a, offset;
+	ld.global.f32 	val_a, [ptr_a];
+	add.f32 	sum, val_a, scalar_val;
+	cvta.to.global.u64 	addr_c, rd_c;
+	add.u64 	ptr_c, addr_c, offset;
+	st.global.f32 	[ptr_c], sum;
+
+$PASS_SCALAR_ADD:
+	ret;
+}
+
+//element wise scalar multiplication
+.visible .entry vectorScalarMul(
+    .param .u64 d_a,
+	.param .f32 scalar,
+	.param .u64 d_c,
+	.param .u32 n
+)
+{
+    .reg .pred 	p1;
+	.reg .f32 	val_a, scalar_val, mul;
+	.reg .u64 	rd_a, rd_c;
+	.reg .u64 	addr_a, addr_c;
+	.reg .u64 	offset, ptr_a, ptr_c;
+    .reg .u32 	ctaid, ntid, tid, idx;
+    .reg .u32 	total_size;
+
+    ld.param.u64 	rd_a, [d_a];
+	ld.param.f32 	scalar_val, [scalar];
+	ld.param.u64 	rd_c, [d_c];
+	ld.param.u32 	total_size, [n];
+    mov.u32 	ctaid, %ctaid.x;
+	mov.u32 	ntid, %ntid.x;
+	mov.u32 	tid, %tid.x;
+	mad.lo.u32 	idx, ctaid, ntid, tid;
+    setp.ge.u32 	p1, idx, total_size;
+	@p1 bra 	$PASS_SCALAR_MUL;
+
+	cvta.to.global.u64 	addr_a, rd_a;
+	mul.wide.u32 	offset, idx, 4;
+	add.u64 	ptr_a, addr_a, offset;
+	ld.global.f32 	val_a, [ptr_a];
+	mul.f32 	mul, val_a, scalar_val;
+	cvta.to.global.u64 	addr_c, rd_c;
+	add.u64 	ptr_c, addr_c, offset;
+	st.global.f32 	[ptr_c], mul;
+
+$PASS_SCALAR_MUL:
+	ret;
+}

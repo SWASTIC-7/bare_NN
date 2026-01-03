@@ -9,7 +9,6 @@ out/
 *.exe
 *.out
 *.app
-*.ptx
 *.cubin
 
 # CMake
