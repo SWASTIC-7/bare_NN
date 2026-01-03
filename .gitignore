@@ -40,6 +40,8 @@ Makefile
 *.a
 *.lib
 
+*.ptx
+
 # Profiling data
 *.qdrep
 *.nsys-rep
