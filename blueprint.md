@@ -12,9 +12,9 @@ A minimal neural network framework from scratch using CUDA/PTX, inspired by micr
 - [x] Scalar operations (a + scalar, a * scalar)
 
 ### 1.2 Activation Functions
-- [ ] ReLU: `f(x) = max(0, x)`
-- [ ] Sigmoid: `f(x) = 1 / (1 + exp(-x))`
-- [ ] Tanh: `f(x) = tanh(x)`
+- [x] ReLU: `f(x) = max(0, x)`
+- [x] Sigmoid: `f(x) = 1 / (1 + exp(-x))`
+- [x] Tanh: `f(x) = tanh(x)`
 - [ ] Leaky ReLU: `f(x) = x if x > 0 else alpha * x`
 - [ ] GELU (for transformers)
 
