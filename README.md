@@ -20,11 +20,14 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 - [ ] Forward pass
 - [ ] Backward Pass
 
+> For PTX conscise tabular doc refer [PTX.md](./PTX.md)
+
 ### Code structure
 
 - **ptx** this folder will contain the handwritten ptx
-- **src** this folder will contain linking code for calling ptx modules
-- **tests** this folder will contain the cuda kernels for nn components for comparison
+- **src** this folder will contain linking code to make NN
+- **reference** this folder will contain the cuda kernels for nn components for comparison
+- **tests** this folder will contain test cuda codes to call ptx written kernels individually
 
 
 ## Resources

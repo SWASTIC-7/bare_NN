@@ -2,6 +2,8 @@
 .target sm_70
 .address_size 64
 
+
+// TODO: Implement more optimized matrix multiplication kernel -- see blog https://siboehm.com/articles/22/CUDA-MMM
 .visible .entry ptx_mul_matrix_complex (
           .param .u64 c_addr,
           .param .u64 a_addr,

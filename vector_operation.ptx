@@ -442,9 +442,9 @@ $L__BB9_2:
 }
 	// .globl	_Z9vectorSumPKfPfi                                          vectorSum
 .visible .entry _Z9vectorSumPKfPfi(
-	.param .u64 _Z9vectorSumPKfPfi_param_0,
-	.param .u64 _Z9vectorSumPKfPfi_param_1,
-	.param .u32 _Z9vectorSumPKfPfi_param_2
+	.param .u64 a,
+	.param .u64 sum,
+	.param .u32 n
 )
 {
 	.reg .pred 	%p<6>;
@@ -453,9 +453,9 @@ $L__BB9_2:
 	.reg .b64 	%rd<7>;
 
 
-	ld.param.u64 	%rd1, [_Z9vectorSumPKfPfi_param_0];
-	ld.param.u64 	%rd2, [_Z9vectorSumPKfPfi_param_1];
-	ld.param.u32 	%r8, [_Z9vectorSumPKfPfi_param_2];
+	ld.param.u64 	%rd1, [a];
+	ld.param.u64 	%rd2, [sum];
+	ld.param.u32 	%r8, [n];
 	mov.u32 	%r1, %ntid.x;
 	mov.u32 	%r9, %ctaid.x;
 	mov.u32 	%r2, %tid.x;
