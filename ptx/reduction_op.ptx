@@ -1,43 +1,150 @@
-.version 9.0
-.target sm_70
+.version 6.5
+.target sm_52
 .address_size 64
 
 // addition (tree based reduction)
 // Level 0 (input):   1   2   3   4   5   6   7   8
 //                     \_+_/     \_+_/     \_+_/     \_+_/
-// Level 1 (s=4):        6        10        —         —      (stored at indices 0,1,2,3)
+// Level 1 (s=4):        6        10                         (stored at indices 0,1,2,3)
 //                        \__+__/            \__+__/
-// Level 2 (s=2):           16                 —             (stored at indices 0,1)
+// Level 2 (s=2):           16                               (stored at indices 0,1)
 //                            \______+______/
 // Level 3 (s=1):                  36                        (stored at index 0)
 .visible .entry sum(
     .param .u64 a,
-	.param .u64 sum,
+	.param .u64 out_sum,
 	.param .u32 n
 ) {
     .reg .u64 rd_a, rd_sum;
     .reg .u32 total_size;
-    .reg .u32 ctaid, ntid, tid, idx;
-    .reg .u32 s, offset;
+    .reg .u32 ntid, tid;
+    .reg .u32 s, partner;
     .reg .f32 val1, val2, sum_val;
-    .reg .u64 addr_a, ptr1, ptr2;
+    .reg .u64 addr_a, addr_sum, ptr1, ptr2;
+    .reg .pred p1, p2, p3;
 
     ld.param.u64 	rd_a, [a];
-    ld.param.u64 	rd_sum, [sum];
+    ld.param.u64 	rd_sum, [out_sum];
     ld.param.u32 	total_size, [n];
 
-    mov.u32 	ctaid, %ctaid.x;
     mov.u32 	ntid, %ntid.x;
     mov.u32 	tid, %tid.x;
-    mad.lo.u32 	idx, ctaid, ntid, tid;
-
-    setp.ge.u32 	p1, idx, total_size;
-    @p1 bra 	$END_SUM;
 
     cvta.to.global.u64 	addr_a, rd_a;
 
-    mov.u32 s, 1;
+    // Start with stride s = n/2, halve each iteration
+    shr.u32 	s, total_size, 1;
+
+$LOOP_SUM:
+    setp.eq.u32 	p1, s, 0;
+    @p1 bra 	$WRITE_RESULT;
+
+    bar.sync 	0;
+
+    setp.ge.u32 	p2, tid, s;
+    @p2 bra 	$SKIP_REDUCE;
+
+    add.u32 	partner, tid, s;
+
+    setp.ge.u32 	p3, partner, total_size;
+    @p3 bra 	$SKIP_REDUCE;
+
+    mul.wide.u32 	ptr1, tid, 4;
+    add.u64 	ptr1, addr_a, ptr1;
+    ld.global.f32 	val1, [ptr1];
+
+    mul.wide.u32 	ptr2, partner, 4;
+    add.u64 	ptr2, addr_a, ptr2;
+    ld.global.f32 	val2, [ptr2];
+
+    add.f32 	sum_val, val1, val2;
+    st.global.f32 	[ptr1], sum_val;
+
+$SKIP_REDUCE:
+    shr.u32 	s, s, 1;
+    bra 	$LOOP_SUM;
+
+$WRITE_RESULT:
+    bar.sync 	0;
+
+    setp.ne.u32 	p2, tid, 0;
+    @p2 bra 	$END_SUM;
+
+    ld.global.f32 	sum_val, [addr_a];
+    cvta.to.global.u64 	addr_sum, rd_sum;
+    st.global.f32 	[addr_sum], sum_val;
 
 $END_SUM:
+    ret;
+}
+
+.visible .entry mean(
+    .param .u64 a,
+	.param .u64 mean,
+	.param .u32 n
+) {
+    .reg .u64 rd_a, rd_mean;
+    .reg .u32 total_size;
+    .reg .u32 ntid, tid;
+    .reg .u32 s, partner;
+    .reg .f32 val1, val2, sum_val, mean_val, f_n;
+    .reg .u64 addr_a, addr_out, ptr1, ptr2;
+    .reg .pred p1, p2, p3;
+
+    ld.param.u64 	rd_a, [a];
+    ld.param.u64 	rd_mean, [mean];
+    ld.param.u32 	total_size, [n];
+
+    mov.u32 	ntid, %ntid.x;
+    mov.u32 	tid, %tid.x;
+
+    cvta.to.global.u64 	addr_a, rd_a;
+
+    // Start with stride s = n/2, halve each iteration
+    shr.u32 	s, total_size, 1;
+
+$LOOP_MEAN:
+    setp.eq.u32 	p1, s, 0;
+    @p1 bra 	$WRITE_MEAN_RESULT;
+
+    bar.sync 	0;
+
+    setp.ge.u32 	p2, tid, s;
+    @p2 bra 	$SKIP_MEAN_REDUCE;
+
+    add.u32 	partner, tid, s;
+
+    setp.ge.u32 	p3, partner, total_size;
+    @p3 bra 	$SKIP_MEAN_REDUCE;
+
+    mul.wide.u32 	ptr1, tid, 4;
+    add.u64 	ptr1, addr_a, ptr1;
+    ld.global.f32 	val1, [ptr1];
+
+    mul.wide.u32 	ptr2, partner, 4;
+    add.u64 	ptr2, addr_a, ptr2;
+    ld.global.f32 	val2, [ptr2];
+
+    add.f32 	sum_val, val1, val2;
+    st.global.f32 	[ptr1], sum_val;
+
+$SKIP_MEAN_REDUCE:
+    shr.u32 	s, s, 1;
+    bra 	$LOOP_MEAN;
+
+$WRITE_MEAN_RESULT:
+    bar.sync 	0;
+
+    setp.ne.u32 	p2, tid, 0;
+    @p2 bra 	$END_MEAN;
+    ld.global.f32 	sum_val, [addr_a];
+
+    cvt.rn.f32.u32 	f_n, total_size;
+    div.rn.f32 	mean_val, sum_val, f_n;
+
+    cvta.to.global.u64 	addr_out, rd_mean;
+    st.global.f32 	[addr_out], mean_val;
+
+$END_MEAN:
     ret;
 }

@@ -26,8 +26,8 @@ A minimal neural network framework from scratch using CUDA/PTX, inspired by micr
 - [ ] GELU gradient
 
 ### 1.4 Reduction Operations
-- [ ] Sum: `sum(x)`
-- [ ] Mean: `mean(x)`
+- [x] Sum: `sum(x)`
+- [x] Mean: `mean(x)`
 - [ ] Max: `max(x)`
 - [ ] Min: `min(x)`
 - [ ] Variance: `var(x)`
