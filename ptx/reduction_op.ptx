@@ -40,23 +40,18 @@ $LOOP_SUM:
     @p1 bra 	$WRITE_RESULT;
 
     bar.sync 	0;
-
     setp.ge.u32 	p2, tid, s;
     @p2 bra 	$SKIP_REDUCE;
-
     add.u32 	partner, tid, s;
-
     setp.ge.u32 	p3, partner, total_size;
     @p3 bra 	$SKIP_REDUCE;
 
     mul.wide.u32 	ptr1, tid, 4;
     add.u64 	ptr1, addr_a, ptr1;
     ld.global.f32 	val1, [ptr1];
-
     mul.wide.u32 	ptr2, partner, 4;
     add.u64 	ptr2, addr_a, ptr2;
     ld.global.f32 	val2, [ptr2];
-
     add.f32 	sum_val, val1, val2;
     st.global.f32 	[ptr1], sum_val;
 
@@ -66,10 +61,8 @@ $SKIP_REDUCE:
 
 $WRITE_RESULT:
     bar.sync 	0;
-
     setp.ne.u32 	p2, tid, 0;
     @p2 bra 	$END_SUM;
-
     ld.global.f32 	sum_val, [addr_a];
     cvta.to.global.u64 	addr_sum, rd_sum;
     st.global.f32 	[addr_sum], sum_val;
@@ -106,25 +99,19 @@ $END_SUM:
 $LOOP_MEAN:
     setp.eq.u32 	p1, s, 0;
     @p1 bra 	$WRITE_MEAN_RESULT;
-
     bar.sync 	0;
-
     setp.ge.u32 	p2, tid, s;
     @p2 bra 	$SKIP_MEAN_REDUCE;
-
     add.u32 	partner, tid, s;
-
     setp.ge.u32 	p3, partner, total_size;
     @p3 bra 	$SKIP_MEAN_REDUCE;
 
     mul.wide.u32 	ptr1, tid, 4;
     add.u64 	ptr1, addr_a, ptr1;
     ld.global.f32 	val1, [ptr1];
-
     mul.wide.u32 	ptr2, partner, 4;
     add.u64 	ptr2, addr_a, ptr2;
     ld.global.f32 	val2, [ptr2];
-
     add.f32 	sum_val, val1, val2;
     st.global.f32 	[ptr1], sum_val;
 
@@ -134,17 +121,128 @@ $SKIP_MEAN_REDUCE:
 
 $WRITE_MEAN_RESULT:
     bar.sync 	0;
-
     setp.ne.u32 	p2, tid, 0;
     @p2 bra 	$END_MEAN;
     ld.global.f32 	sum_val, [addr_a];
-
     cvt.rn.f32.u32 	f_n, total_size;
     div.rn.f32 	mean_val, sum_val, f_n;
-
     cvta.to.global.u64 	addr_out, rd_mean;
     st.global.f32 	[addr_out], mean_val;
 
 $END_MEAN:
+    ret;
+}
+
+.visible .entry max(
+    .param .u64 a,
+    .param .u64 out_max,
+    .param .u32 n
+) {
+    .reg .u64 rd_a, rd_max;
+    .reg .u32 total_size;
+    .reg .u32 ntid, tid;
+    .reg .u32 s, partner;
+    .reg .f32 val1, val2, max_val;
+    .reg .u64 addr_a, addr_max, ptr1, ptr2;
+    .reg .pred p1, p2, p3;
+
+    ld.param.u64 	rd_a, [a];
+    ld.param.u64 	rd_max, [out_max];
+    ld.param.u32 	total_size, [n];
+
+    mov.u32 	ntid, %ntid.x;
+    mov.u32 	tid, %tid.x;
+
+    cvta.to.global.u64 	addr_a, rd_a;
+
+    // Start with stride s = n/2, halve each iteration
+    shr.u32 	s, total_size, 1;  
+$LOOP_MAX:
+    setp.eq.u32 	p1, s, 0;
+    @p1 bra 	$WRITE_MAX_RESULT;
+    bar.sync 	0;
+    setp.ge.u32 	p2, tid, s;
+    @p2 bra 	$SKIP_MAX_REDUCE;
+    add.u32 	partner, tid, s;
+    setp.ge.u32 	p3, partner, total_size;
+    @p3 bra 	$SKIP_MAX_REDUCE;
+    mul.wide.u32 	ptr1, tid, 4;
+    add.u64 	ptr1, addr_a, ptr1;
+    ld.global.f32 	val1, [ptr1];
+    mul.wide.u32 	ptr2, partner, 4;
+    
+    add.u64 	ptr2, addr_a, ptr2;
+    ld.global.f32 	val2, [ptr2];
+    max.f32 	max_val, val1, val2;
+    st.global.f32 	[ptr1], max_val;
+$SKIP_MAX_REDUCE:
+    shr.u32 	s, s, 1;
+    bra 	$LOOP_MAX;
+$WRITE_MAX_RESULT:
+    bar.sync 	0;
+    setp.ne.u32 	p2, tid, 0;
+    @p2 bra 	$END_MAX;
+    ld.global.f32 	max_val, [addr_a];
+    cvta.to.global.u64 	addr_max, rd_max;
+    st.global.f32 	[addr_max], max_val;
+$END_MAX:
+    ret;
+}
+
+
+
+.visible .entry min(
+    .param .u64 a,
+    .param .u64 out_min,
+    .param .u32 n
+) {
+    .reg .u64 rd_a, rd_min;
+    .reg .u32 total_size;
+    .reg .u32 ntid, tid;
+    .reg .u32 s, partner;
+    .reg .f32 val1, val2, min_val;
+    .reg .u64 addr_a, addr_min, ptr1, ptr2;
+    .reg .pred p1, p2, p3;
+
+    ld.param.u64 	rd_a, [a];
+    ld.param.u64 	rd_min, [out_min];
+    ld.param.u32 	total_size, [n];
+
+    mov.u32 	ntid, %ntid.x;
+    mov.u32 	tid, %tid.x;
+
+    cvta.to.global.u64 	addr_a, rd_a;
+
+    // Start with stride s = n/2, halve each iteration
+    shr.u32 	s, total_size, 1;   
+$LOOP_MIN:
+    setp.eq.u32 	p1, s, 0;
+    @p1 bra 	$WRITE_MIN_RESULT;
+    bar.sync 	0;
+    setp.ge.u32 	p2, tid, s;
+    @p2 bra 	$SKIP_MIN_REDUCE;
+    add.u32 	partner, tid, s;
+    setp.ge.u32 	p3, partner, total_size;
+    @p3 bra 	$SKIP_MIN_REDUCE;
+    mul.wide.u32 	ptr1, tid, 4;
+    add.u64 	ptr1, addr_a, ptr1;
+    ld.global.f32 	val1, [ptr1];
+    mul.wide.u32 	ptr2, partner, 4;
+    add.u64 	ptr2, addr_a, ptr2;
+    ld.global.f32 	val2, [ptr2];
+    min.f32 	min_val, val1, val2;
+    st.global.f32 	[ptr1], min_val;
+$SKIP_MIN_REDUCE:
+
+    shr.u32 	s, s, 1;
+    bra 	$LOOP_MIN;
+$WRITE_MIN_RESULT:
+    bar.sync 	0;
+    setp.ne.u32 	p2, tid, 0;
+    @p2 bra 	$END_MIN;
+    ld.global.f32 	min_val, [addr_a];
+    cvta.to.global.u64 	addr_min, rd_min;
+    st.global.f32 	[addr_min], min_val;
+$END_MIN:
     ret;
 }
