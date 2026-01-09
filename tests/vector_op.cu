@@ -43,7 +43,7 @@ int main() {
     }
 
     CUmodule module;
-    CHECK(cuModuleLoad(&module, "ptx/vector_operation.ptx"));
+    CHECK(cuModuleLoad(&module, "../ptx/vector_operation.ptx"));
 
     CUfunction kernel;
     CHECK(cuModuleGetFunction(&kernel, module, "vectorScalarMul"));
