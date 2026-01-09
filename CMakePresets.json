@@ -1,0 +1,101 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 18,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Default Config",
+            "description": "Default build using Ninja generator",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_TESTS": "ON",
+                "BUILD_EXAMPLES": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "description": "Debug build with symbols",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "description": "Optimized release build",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "ENABLE_FAST_MATH": "ON"
+            }
+        },
+        {
+            "name": "msvc",
+            "displayName": "Visual Studio",
+            "description": "Build using Visual Studio",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build-vs",
+            "cacheVariables": {
+                "BUILD_TESTS": "ON"
+            }
+        },
+        {
+            "name": "ptx-gen",
+            "displayName": "PTX Generation",
+            "description": "Build with PTX file generation",
+            "inherits": "default",
+            "cacheVariables": {
+                "GENERATE_PTX": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "msvc-debug",
+            "configurePreset": "msvc",
+            "configuration": "Debug"
+        },
+        {
+            "name": "msvc-release",
+            "configurePreset": "msvc",
+            "configuration": "Release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "output": {
+                "verbosity": "verbose",
+                "outputOnFailure": true
+            }
+        }
+    ]
+}

@@ -17,6 +17,9 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 *.cmake
+CMakePresets.json.user
+compile_commands.json
+build-*/
 
 # Visual Studio
 .vs/
