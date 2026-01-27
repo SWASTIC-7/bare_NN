@@ -13,9 +13,10 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 
 ### Core Functionality
 - [x] vector operations
-- [ ] Matrix multiplications
+- [x] Matrix multiplications
 - [x] Activation
 - [x] Reduction operation
+- [ ] Matrix multiplication advanced
 - [ ] Loss
 - [ ] Gradient
 - [ ] Forward pass
