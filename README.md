@@ -28,7 +28,7 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 
 - **ptx** this folder will contain the handwritten ptx
 - **src** this folder will contain linking code to make NN
-- **reference** this folder will contain the cuda kernels for nn components for comparison
+- **reference** this folder will contain the vibe coded cuda kernels for nn components for comparison
 - **tests** this folder will contain test cuda codes to call ptx written kernels individually
 - **include** common headers and utilities
 
