@@ -30,7 +30,6 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 - **src** this folder will contain linking code to make NN
 - **reference** this folder will contain the cuda kernels for nn components for comparison
 - **tests** this folder will contain test cuda codes to call ptx written kernels individually
-- **cmake** CMake helper modules for building
 - **include** common headers and utilities
 
 ## Building
@@ -38,71 +37,65 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 ### Prerequisites
 
 - CUDA Toolkit 11.0+ (tested with 12.x)
-- CMake 3.18+
 - C++17 compatible compiler
-- Ninja (recommended) or Make
+- GNU Make
 
 ### Quick Build
 
 ```bash
-# Configure and build (using presets)
-cmake --preset default
-cmake --build --preset default
+# Build everything (release mode)
+make
 
-# Or manually
-mkdir build && cd build
-cmake ..
-cmake --build .
+# Build with debug symbols
+make BUILD_TYPE=debug
+
+# Show all available targets
+make help
 ```
 
-### Build Presets
+### Make Targets
 
-| Preset | Description |
+| Target | Description |
 |--------|-------------|
-| `default` | Release build with Ninja |
-| `debug` | Debug build with symbols |
-| `release` | Optimized release build |
-| `msvc` | Visual Studio 2022 |
-| `ptx-gen` | Build + generate PTX files |
+| `all` | Build everything (default) |
+| `main` | Build main executable |
+| `cnn` | Build CNN PTX executable |
+| `tests` | Build all tests |
+| `run` | Run main executable |
+| `run_cnn` | Run CNN executable |
+| `run_tests` | Run all tests |
+| `ptx` | Generate PTX from CUDA source |
+| `clean` | Remove build directory |
+| `distclean` | Remove all generated files |
+
+### Build Types
+
+| Type | Description |
+|------|-------------|
+| `release` | Optimized build with fast math (default) |
+| `debug` | Debug build with symbols (-G -g) |
 
 ```bash
+# Release build (default)
+make
+
 # Debug build
-cmake --preset debug
-cmake --build --preset debug
+make BUILD_TYPE=debug
 
-# Visual Studio (Windows)
-cmake --preset msvc
-cmake --build --preset msvc-release
-```
-
-### Build Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `BUILD_TESTS` | ON | Build test executables |
-| `BUILD_EXAMPLES` | ON | Build example programs |
-| `GENERATE_PTX` | OFF | Generate PTX from .cu files |
-| `ENABLE_FAST_MATH` | ON | Enable fast math optimizations |
-| `CMAKE_CUDA_ARCHITECTURES` | 75;86;89 | Target GPU architectures |
-
-```bash
-# Custom build example
-cmake -B build -DCMAKE_CUDA_ARCHITECTURES=86 -DBUILD_TESTS=ON
-cmake --build build --config Release
+# Build only tests
+make tests
 ```
 
 ### Running Tests
 
 ```bash
-# Run all tests
-cd build
-ctest --output-on-failure
-
-# Or use the custom target
-cmake --build build --target run_tests
+# Build and run all tests
+make run_tests
 
 # Run specific test
 ./build/tests/test_vector_op
+./build/tests/test_matmul
+./build/tests/test_reduction_op
 ```
 
 ### Project Structure After Build
@@ -110,12 +103,14 @@ cmake --build build --target run_tests
 ```
 bare_NN/
 ├── build/
-│   ├── main.exe              # Main executable
-│   ├── ptx/                  # Copied PTX files
+│   ├── main              # Main executable
+│   ├── cnn               # CNN executable
+│   ├── ptx/              # Copied PTX files
 │   └── tests/
-│       ├── test_vector_op.exe
-│       ├── test_matmul.exe
-│       └── ptx/              # PTX files for tests
+│       ├── test_vector_op
+│       ├── test_matmul
+│       ├── test_reduction_op
+│       └── ptx/          # PTX files for tests
 ├── src/
 ├── tests/
 └── ptx/

@@ -17,6 +17,8 @@ A minimal neural network framework from scratch using CUDA/PTX, inspired by micr
 - [x] Tanh: `f(x) = tanh(x)`
 - [ ] Leaky ReLU: `f(x) = x if x > 0 else alpha * x`
 - [ ] GELU (for transformers)
+- [x] Softmax: `softmax(x)_i = exp(x_i) / sum(exp(x))`
+- [x] Log-softmax (numerically stable)
 
 ### 1.3 Activation Gradients (Backward Pass)
 - [x] ReLU gradient: `f'(x) = 1 if x > 0 else 0`
@@ -40,13 +42,6 @@ A minimal neural network framework from scratch using CUDA/PTX, inspired by micr
 - [ ] Transpose
 - [ ] Matrix-Vector with bias: `y = A * x + b`
 
-### 1.6 Advanced Operations
-- [ ] Broadcasting support
-- [ ] Concatenation
-- [ ] Slicing/Indexing
-- [ ] Reshape operations
-- [ ] Softmax: `softmax(x)_i = exp(x_i) / sum(exp(x))`
-- [ ] Log-softmax (numerically stable)
 
 ---
 
