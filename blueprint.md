@@ -19,11 +19,11 @@ A minimal neural network framework from scratch using CUDA/PTX, inspired by micr
 - [ ] GELU (for transformers)
 
 ### 1.3 Activation Gradients (Backward Pass)
-- [ ] ReLU gradient: `f'(x) = 1 if x > 0 else 0`
-- [ ] Sigmoid gradient: `f'(x) = sigmoid(x) * (1 - sigmoid(x))`
-- [ ] Tanh gradient: `f'(x) = 1 - tanh²(x)`
-- [ ] Leaky ReLU gradient
-- [ ] GELU gradient
+- [x] ReLU gradient: `f'(x) = 1 if x > 0 else 0`
+- [x] Sigmoid gradient: `f'(x) = sigmoid(x) * (1 - sigmoid(x))`
+- [x] Tanh gradient: `f'(x) = 1 - tanh²(x)`
+- [x] Leaky ReLU gradient
+- [x] GELU gradient
 
 ### 1.4 Reduction Operations
 - [x] Sum: `sum(x)`

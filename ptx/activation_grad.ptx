@@ -1,0 +1,660 @@
+.version 8.0
+.target sm_70
+.address_size 64
+
+// ReLU Gradient: f'(x) = 1 if x > 0, else 0
+// grad_out[i] = grad_in[i] * (x[i] > 0 ? 1 : 0)
+.visible .entry relu_grad(
+    .param .u64 input,          // Original input x
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size
+)
+{
+    .reg .pred      p_bounds, p_positive;
+    .reg .f32       x, grad, result, zero;
+    .reg .u64       addr_input, addr_grad_in, addr_grad_out;
+    .reg .u64       base_input, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_input, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, size;
+
+    ld.param.u64    base_input, [input];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+
+    setp.ge.u32     p_bounds, idx, size;
+    @p_bounds bra   RELU_GRAD_EXIT;
+
+    cvta.to.global.u64  addr_input, base_input;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, idx, 4;
+
+    add.u64         ptr_input, addr_input, offset;
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.f32   x, [ptr_input];
+    ld.global.f32   grad, [ptr_grad_in];
+
+    // ReLU gradient: grad * (x > 0 ? 1 : 0)
+    mov.f32         zero, 0.0;
+    setp.gt.f32     p_positive, x, zero;
+    selp.f32        result, grad, zero, p_positive;
+
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.f32   [ptr_grad_out], result;
+
+RELU_GRAD_EXIT:
+    ret;
+}
+
+
+// Sigmoid: y = 1 / (1 + exp(-a[i]))
+// Sigmoid Gradient: f'(x) = sigmoid(x) * (1 - sigmoid(x))
+// Can also be computed from output: f'(x) = y * (1 - y)
+// This version takes the sigmoid output directly for efficiency
+
+.visible .entry sigmoid_grad(
+    .param .u64 sigmoid_out,    // Sigmoid output y = sigmoid(x)
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       y, grad, one_minus_y, derivative, result, one;
+    .reg .u64       addr_sigmoid, addr_grad_in, addr_grad_out;
+    .reg .u64       base_sigmoid, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_sigmoid, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, size;
+
+    ld.param.u64    base_sigmoid, [sigmoid_out];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+
+    setp.ge.u32     p_bounds, idx, size;
+    @p_bounds bra   SIGMOID_GRAD_EXIT;
+
+    cvta.to.global.u64  addr_sigmoid, base_sigmoid;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, idx, 4;
+
+    add.u64         ptr_sigmoid, addr_sigmoid, offset;
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.f32   y, [ptr_sigmoid];
+    ld.global.f32   grad, [ptr_grad_in];
+
+    // Compute derivative: y * (1 - y)
+    mov.f32         one, 1.0;
+    sub.f32         one_minus_y, one, y;
+    mul.f32         derivative, y, one_minus_y;
+
+    mul.f32         result, grad, derivative;
+
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.f32   [ptr_grad_out], result;
+
+SIGMOID_GRAD_EXIT:
+    ret;
+}
+
+
+
+// Sigmoid Gradient from Input: Computes sigmoid internally
+// f'(x) = sigmoid(x) * (1 - sigmoid(x))
+// Use when you don't have cached sigmoid output
+
+.visible .entry sigmoid_grad_from_input(
+    .param .u64 input,          // Original input x
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       x, grad, neg_x, exp_val, sigmoid_val;
+    .reg .f32       one_minus_sigmoid, derivative, result;
+    .reg .f32       one, log2e, clamped_x, min_clamp, max_clamp;
+    .reg .u64       addr_input, addr_grad_in, addr_grad_out;
+    .reg .u64       base_input, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_input, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, size;
+
+    ld.param.u64    base_input, [input];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+
+    setp.ge.u32     p_bounds, idx, size;
+    @p_bounds bra   SIGMOID_GRAD_INPUT_EXIT;
+
+    cvta.to.global.u64  addr_input, base_input;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, idx, 4;
+
+    add.u64         ptr_input, addr_input, offset;
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.f32   x, [ptr_input];
+    ld.global.f32   grad, [ptr_grad_in];
+
+    mov.f32         min_clamp, 0fC2B00000;      // -88.0
+    mov.f32         max_clamp, 0f42B00000;      // 88.0
+    max.f32         clamped_x, x, min_clamp;
+    min.f32         clamped_x, clamped_x, max_clamp;
+
+    // Compute sigmoid: 1 / (1 + exp(-x))
+    neg.f32         neg_x, clamped_x;
+    mov.f32         log2e, 0f3FB8AA3B;          // log2(e) = 1.4427
+    mul.f32         neg_x, neg_x, log2e;
+    ex2.approx.f32  exp_val, neg_x;
+    mov.f32         one, 1.0;
+    add.f32         exp_val, exp_val, one;
+    rcp.approx.f32  sigmoid_val, exp_val;
+
+    // Compute derivative: sigmoid * (1 - sigmoid)
+    sub.f32         one_minus_sigmoid, one, sigmoid_val;
+    mul.f32         derivative, sigmoid_val, one_minus_sigmoid;
+
+    mul.f32         result, grad, derivative;
+
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.f32   [ptr_grad_out], result;
+
+SIGMOID_GRAD_INPUT_EXIT:
+    ret;
+}
+
+
+// Tanh Gradient: f'(x) = 1 - tanh²(x)
+// Can be computed from output: f'(x) = 1 - y² where y = tanh(x)
+// This version takes the tanh output directly for efficiency
+
+.visible .entry tanh_grad(
+    .param .u64 tanh_out,       // Tanh output y = tanh(x)
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       y, grad, y_squared, derivative, result, one;
+    .reg .u64       addr_tanh, addr_grad_in, addr_grad_out;
+    .reg .u64       base_tanh, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_tanh, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, size;
+
+    ld.param.u64    base_tanh, [tanh_out];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+
+    setp.ge.u32     p_bounds, idx, size;
+    @p_bounds bra   TANH_GRAD_EXIT;
+
+    cvta.to.global.u64  addr_tanh, base_tanh;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, idx, 4;
+
+    add.u64         ptr_tanh, addr_tanh, offset;
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.f32   y, [ptr_tanh];
+    ld.global.f32   grad, [ptr_grad_in];
+
+    // Compute derivative: 1 - y²
+    // Using FMA: derivative = -y * y + 1
+    mov.f32         one, 1.0;
+    mul.f32         y_squared, y, y;
+    sub.f32         derivative, one, y_squared;
+
+    mul.f32         result, grad, derivative;
+
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.f32   [ptr_grad_out], result;
+
+TANH_GRAD_EXIT:
+    ret;
+}
+
+
+// Tanh Gradient from Input: Computes tanh internally using exp-based method
+// f'(x) = 1 - tanh²(x)
+// Use when you don't have cached tanh output
+.visible .entry tanh_grad_from_input(
+    .param .u64 input,          // Original input x
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size
+)
+{
+    .reg .pred      p_bounds, p_saturate;
+    .reg .f32       x, grad, abs_x, two_x, exp_2x, tanh_val;
+    .reg .f32       y_squared, derivative, result;
+    .reg .f32       one, two, log2e, numerator, denominator;
+    .reg .u64       addr_input, addr_grad_in, addr_grad_out;
+    .reg .u64       base_input, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_input, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, size;
+
+    ld.param.u64    base_input, [input];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+
+    setp.ge.u32     p_bounds, idx, size;
+    @p_bounds bra   TANH_GRAD_INPUT_EXIT;
+
+    cvta.to.global.u64  addr_input, base_input;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, idx, 4;
+
+    add.u64         ptr_input, addr_input, offset;
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.f32   x, [ptr_input];
+    ld.global.f32   grad, [ptr_grad_in];
+
+    // For large |x|, tanh saturates to ±1, so derivative → 0
+    abs.f32         abs_x, x;
+    setp.gt.f32     p_saturate, abs_x, 0f41100000;  // threshold ~9.0
+    @p_saturate bra TANH_GRAD_SATURATED;
+
+    // Compute tanh using: tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+    mov.f32         two, 2.0;
+    mov.f32         one, 1.0;
+    mov.f32         log2e, 0f3FB8AA3B;          // log2(e)
+    
+    mul.f32         two_x, x, two;
+    mul.f32         two_x, two_x, log2e;
+    ex2.approx.f32  exp_2x, two_x;
+    
+    sub.f32         numerator, exp_2x, one;
+    add.f32         denominator, exp_2x, one;
+    rcp.approx.f32  denominator, denominator;
+    mul.f32         tanh_val, numerator, denominator;
+
+    // Compute derivative: 1 - tanh²
+    mul.f32         y_squared, tanh_val, tanh_val;
+    sub.f32         derivative, one, y_squared;
+    mul.f32         result, grad, derivative;
+    bra             TANH_GRAD_STORE;
+
+TANH_GRAD_SATURATED:
+    // For saturated regions, derivative is ~0
+    mov.f32         result, 0.0;
+
+TANH_GRAD_STORE:
+    // Store result
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.f32   [ptr_grad_out], result;
+
+TANH_GRAD_INPUT_EXIT:
+    ret;
+}
+
+
+//-----------------------------------------------------------------------------
+// Leaky ReLU Gradient: f'(x) = 1 if x > 0, else alpha
+// grad_out[i] = grad_in[i] * (x[i] > 0 ? 1 : alpha)
+//-----------------------------------------------------------------------------
+.visible .entry leaky_relu_grad(
+    .param .u64 input,          // Original input x
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .f32 alpha,          // Leaky slope (typically 0.01)
+    .param .u32 n               // Array size
+)
+{
+    .reg .pred      p_bounds, p_positive;
+    .reg .f32       x, grad, slope, derivative, result, zero, one;
+    .reg .u64       addr_input, addr_grad_in, addr_grad_out;
+    .reg .u64       base_input, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_input, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, size;
+
+    // Load parameters
+    ld.param.u64    base_input, [input];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.f32    slope, [alpha];
+    ld.param.u32    size, [n];
+
+    // Calculate global thread index
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, size;
+    @p_bounds bra   LEAKY_RELU_GRAD_EXIT;
+
+    // Convert to global addresses
+    cvta.to.global.u64  addr_input, base_input;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, idx, 4;
+
+    // Load input and upstream gradient
+    add.u64         ptr_input, addr_input, offset;
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.f32   x, [ptr_input];
+    ld.global.f32   grad, [ptr_grad_in];
+
+    // Leaky ReLU gradient: x > 0 ? 1 : alpha
+    mov.f32         zero, 0.0;
+    mov.f32         one, 1.0;
+    setp.gt.f32     p_positive, x, zero;
+    selp.f32        derivative, one, slope, p_positive;
+
+    // Multiply by upstream gradient
+    mul.f32         result, grad, derivative;
+
+    // Store result
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.f32   [ptr_grad_out], result;
+
+LEAKY_RELU_GRAD_EXIT:
+    ret;
+}
+
+
+//-----------------------------------------------------------------------------
+// GELU Gradient: Gaussian Error Linear Unit
+// GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+// 
+// Derivative (approximation):
+// GELU'(x) = 0.5 * (1 + tanh(k*(x + c*x³))) + 
+//            0.5 * x * sech²(k*(x + c*x³)) * k * (1 + 3*c*x²)
+// where k = sqrt(2/π) ≈ 0.7978845608, c = 0.044715
+//-----------------------------------------------------------------------------
+.visible .entry gelu_grad(
+    .param .u64 input,          // Original input x
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       x, grad, x_sq, x_cubed;
+    .reg .f32       inner, tanh_inner, sech_sq;
+    .reg .f32       term1, term2, derivative, result;
+    .reg .f32       half, one, two, k, c, three_c;
+    .reg .f32       log2e, scaled_inner, exp_2inner;
+    .reg .f32       tanh_num, tanh_denom, one_plus_tanh;
+    .reg .f32       one_plus_3cx2, temp;
+    .reg .u64       addr_input, addr_grad_in, addr_grad_out;
+    .reg .u64       base_input, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_input, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, size;
+
+    // Load parameters
+    ld.param.u64    base_input, [input];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    // Calculate global thread index
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, size;
+    @p_bounds bra   GELU_GRAD_EXIT;
+
+    // Convert to global addresses
+    cvta.to.global.u64  addr_input, base_input;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, idx, 4;
+
+    // Load input and upstream gradient
+    add.u64         ptr_input, addr_input, offset;
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.f32   x, [ptr_input];
+    ld.global.f32   grad, [ptr_grad_in];
+
+    // Constants
+    mov.f32         half, 0.5;
+    mov.f32         one, 1.0;
+    mov.f32         two, 2.0;
+    mov.f32         k, 0f3F4C422A;               // sqrt(2/π) ≈ 0.7978845608
+    mov.f32         c, 0f3D372713;               // 0.044715
+    mov.f32         three_c, 0f3E5B0F28;         // 3 * 0.044715 = 0.134145
+    mov.f32         log2e, 0f3FB8AA3B;           // log2(e)
+
+    // Compute x² and x³
+    mul.f32         x_sq, x, x;
+    mul.f32         x_cubed, x_sq, x;
+
+    // inner = k * (x + c * x³)
+    fma.rn.f32      temp, c, x_cubed, x;         // x + c*x³
+    mul.f32         inner, k, temp;
+
+    // Compute tanh(inner) using: tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+    mul.f32         scaled_inner, inner, two;
+    mul.f32         scaled_inner, scaled_inner, log2e;
+    ex2.approx.f32  exp_2inner, scaled_inner;
+    
+    sub.f32         tanh_num, exp_2inner, one;
+    add.f32         tanh_denom, exp_2inner, one;
+    rcp.approx.f32  tanh_denom, tanh_denom;
+    mul.f32         tanh_inner, tanh_num, tanh_denom;
+
+    // Compute sech²(inner) = 1 - tanh²(inner)
+    mul.f32         sech_sq, tanh_inner, tanh_inner;
+    sub.f32         sech_sq, one, sech_sq;
+
+    // term1 = 0.5 * (1 + tanh(inner))
+    add.f32         one_plus_tanh, one, tanh_inner;
+    mul.f32         term1, half, one_plus_tanh;
+
+    // term2 = 0.5 * x * sech²(inner) * k * (1 + 3*c*x²)
+    // = 0.5 * x * sech_sq * k * (1 + 3*c*x²)
+    fma.rn.f32      one_plus_3cx2, three_c, x_sq, one;   // 1 + 3*c*x²
+    mul.f32         term2, half, x;
+    mul.f32         term2, term2, sech_sq;
+    mul.f32         term2, term2, k;
+    mul.f32         term2, term2, one_plus_3cx2;
+
+    // derivative = term1 + term2
+    add.f32         derivative, term1, term2;
+
+    // Multiply by upstream gradient
+    mul.f32         result, grad, derivative;
+
+    // Store result
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.f32   [ptr_grad_out], result;
+
+GELU_GRAD_EXIT:
+    ret;
+}
+
+
+//-----------------------------------------------------------------------------
+// Vectorized ReLU Gradient (4 elements per thread)
+// Optimized for memory throughput using vector loads/stores
+//-----------------------------------------------------------------------------
+.visible .entry relu_grad_vec4(
+    .param .u64 input,          // Original input x
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size (must be multiple of 4)
+)
+{
+    .reg .pred      p_bounds, p0, p1, p2, p3;
+    .reg .f32       x0, x1, x2, x3;
+    .reg .f32       g0, g1, g2, g3;
+    .reg .f32       r0, r1, r2, r3;
+    .reg .f32       zero;
+    .reg .u64       addr_input, addr_grad_in, addr_grad_out;
+    .reg .u64       base_input, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_input, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, vec_idx, size;
+
+    // Load parameters
+    ld.param.u64    base_input, [input];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    // Calculate global thread index (each thread handles 4 elements)
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+    shl.b32         vec_idx, idx, 2;             // vec_idx = idx * 4
+
+    // Bounds check
+    setp.ge.u32     p_bounds, vec_idx, size;
+    @p_bounds bra   RELU_GRAD_VEC4_EXIT;
+
+    // Convert to global addresses
+    cvta.to.global.u64  addr_input, base_input;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, vec_idx, 4;
+
+    // Load 4 input values
+    add.u64         ptr_input, addr_input, offset;
+    ld.global.v4.f32 {x0, x1, x2, x3}, [ptr_input];
+
+    // Load 4 gradient values
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.v4.f32 {g0, g1, g2, g3}, [ptr_grad_in];
+
+    // Compute ReLU gradients
+    mov.f32         zero, 0.0;
+    
+    setp.gt.f32     p0, x0, zero;
+    setp.gt.f32     p1, x1, zero;
+    setp.gt.f32     p2, x2, zero;
+    setp.gt.f32     p3, x3, zero;
+    
+    selp.f32        r0, g0, zero, p0;
+    selp.f32        r1, g1, zero, p1;
+    selp.f32        r2, g2, zero, p2;
+    selp.f32        r3, g3, zero, p3;
+
+    // Store 4 results
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.v4.f32 [ptr_grad_out], {r0, r1, r2, r3};
+
+RELU_GRAD_VEC4_EXIT:
+    ret;
+}
+
+
+//-----------------------------------------------------------------------------
+// Vectorized Sigmoid Gradient (4 elements per thread)
+//-----------------------------------------------------------------------------
+.visible .entry sigmoid_grad_vec4(
+    .param .u64 sigmoid_out,    // Sigmoid output y = sigmoid(x)
+    .param .u64 grad_in,        // Upstream gradient
+    .param .u64 grad_out,       // Output gradient
+    .param .u32 n               // Array size (must be multiple of 4)
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       y0, y1, y2, y3;
+    .reg .f32       g0, g1, g2, g3;
+    .reg .f32       d0, d1, d2, d3;
+    .reg .f32       r0, r1, r2, r3;
+    .reg .f32       one;
+    .reg .u64       addr_sigmoid, addr_grad_in, addr_grad_out;
+    .reg .u64       base_sigmoid, base_grad_in, base_grad_out;
+    .reg .u64       offset, ptr_sigmoid, ptr_grad_in, ptr_grad_out;
+    .reg .u32       block_id, block_size, thread_id, idx, vec_idx, size;
+
+    // Load parameters
+    ld.param.u64    base_sigmoid, [sigmoid_out];
+    ld.param.u64    base_grad_in, [grad_in];
+    ld.param.u64    base_grad_out, [grad_out];
+    ld.param.u32    size, [n];
+
+    // Calculate global thread index (each thread handles 4 elements)
+    mov.u32         block_id, %ctaid.x;
+    mov.u32         block_size, %ntid.x;
+    mov.u32         thread_id, %tid.x;
+    mad.lo.u32      idx, block_id, block_size, thread_id;
+    shl.b32         vec_idx, idx, 2;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, vec_idx, size;
+    @p_bounds bra   SIGMOID_GRAD_VEC4_EXIT;
+
+    // Convert to global addresses
+    cvta.to.global.u64  addr_sigmoid, base_sigmoid;
+    cvta.to.global.u64  addr_grad_in, base_grad_in;
+    cvta.to.global.u64  addr_grad_out, base_grad_out;
+    mul.wide.u32    offset, vec_idx, 4;
+
+    // Load 4 sigmoid outputs
+    add.u64         ptr_sigmoid, addr_sigmoid, offset;
+    ld.global.v4.f32 {y0, y1, y2, y3}, [ptr_sigmoid];
+
+    // Load 4 gradient values
+    add.u64         ptr_grad_in, addr_grad_in, offset;
+    ld.global.v4.f32 {g0, g1, g2, g3}, [ptr_grad_in];
+
+    // Compute sigmoid gradients: y * (1 - y) * grad
+    mov.f32         one, 1.0;
+    
+    // Element 0
+    sub.f32         d0, one, y0;
+    mul.f32         d0, y0, d0;
+    mul.f32         r0, g0, d0;
+    
+    // Element 1
+    sub.f32         d1, one, y1;
+    mul.f32         d1, y1, d1;
+    mul.f32         r1, g1, d1;
+    
+    // Element 2
+    sub.f32         d2, one, y2;
+    mul.f32         d2, y2, d2;
+    mul.f32         r2, g2, d2;
+    
+    // Element 3
+    sub.f32         d3, one, y3;
+    mul.f32         d3, y3, d3;
+    mul.f32         r3, g3, d3;
+
+    // Store 4 results
+    add.u64         ptr_grad_out, addr_grad_out, offset;
+    st.global.v4.f32 [ptr_grad_out], {r0, r1, r2, r3};
+
+SIGMOID_GRAD_VEC4_EXIT:
+    ret;
+}
