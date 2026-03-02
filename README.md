@@ -122,6 +122,7 @@ bare_NN/
 - [CUDA C Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/)
 - [PTX ISA Documentation](https://docs.nvidia.com/cuda/parallel-thread-execution/)
 - [NVIDIA Nsight Tools](https://developer.nvidia.com/nsight-systems)
+- [Attention is all you need](https://arxiv.org/abs/1706.03762)
 
 ---
 
