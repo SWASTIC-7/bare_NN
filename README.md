@@ -18,7 +18,7 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 - [x] Reduction operation
 - [ ] Matrix multiplication advanced
 - [ ] Loss
-- [ ] Gradient
+- [x] Gradient
 - [ ] Forward pass
 - [ ] Backward Pass
 
