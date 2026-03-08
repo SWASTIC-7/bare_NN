@@ -16,6 +16,8 @@ static Layer l_c1 = Layer(5*5, 6, 24*24*6);
 static Layer l_s1 = Layer(4*4, 1, 6*6*6);
 static Layer l_f = Layer(6*6*6, 10, 10);
 
+
+// declarations of functions
 static void learn();
 static unsigned int classify(double data[28][28]);
 static void test();
@@ -133,7 +135,7 @@ static void learn()
 {
 	static cublasHandle_t blas;
 	cublasCreate(&blas);
-
+ 
 	float err;
 	int iter = 50;
 	

@@ -32,6 +32,8 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 - **tests** this folder will contain test cuda codes to call ptx written kernels individually
 - **include** common headers and utilities
 
+> Remember: reference is mostly ai generated
+
 ## Building
 
 ### Prerequisites
