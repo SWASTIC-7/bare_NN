@@ -153,3 +153,7 @@ static void unfold_input(double input[28][28], double unfolded[24*24][5*5])
 			a++;
 		}
 }
+
+static double forward_pass(double input[28][28]) {
+    
+}

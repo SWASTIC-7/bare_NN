@@ -55,3 +55,24 @@ Layer::~Layer()
 	cudaFree(d_preact);
 	cudaFree(d_weight);
 }
+
+// Send data one row from dataset to the GPU
+void Layer::setOutput(float *data)
+{
+	cudaMemcpy(output, data, sizeof(float) * O, cudaMemcpyHostToDevice);
+}
+
+// Reset GPU memory between iterations
+void Layer::clear()
+{
+	cudaMemset(output, 0x00, sizeof(float) * O);
+	cudaMemset(preact, 0x00, sizeof(float) * O);
+}
+
+void Layer::bp_clear()
+{
+	cudaMemset(d_output, 0x00, sizeof(float) * O);
+	cudaMemset(d_preact, 0x00, sizeof(float) * O);
+	cudaMemset(d_weight, 0x00, sizeof(float) * M * N);
+}
+
