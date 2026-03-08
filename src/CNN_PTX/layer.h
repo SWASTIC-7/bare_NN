@@ -36,3 +36,8 @@ class Layer {
 	void clear();
 	void bp_clear();
 };
+
+// PTX-based activation functions (loaded from activation_fn.ptx)
+void init_activation_ptx(const char* ptx_path);
+void cleanup_activation_ptx();
+void launch_sigmoid_ptx(float* d_input, float* d_output, int n, int block_size = 256);

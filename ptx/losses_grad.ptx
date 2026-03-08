@@ -1,0 +1,116 @@
+// gradient[i] = (2/n) * (predicted[i] - target[i])
+.visible .entry mse_gradient(
+    .param .u64 d_predicted,
+    .param .u64 d_target,
+    .param .u64 d_gradient,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_predicted, val_target, val_diff, val_gradient;
+    .reg .f32       two, n_float, scale;
+    .reg .u64       addr_predicted, addr_target, addr_gradient;
+    .reg .u64       ptr_predicted, ptr_target, ptr_gradient;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx;
+    .reg .u32       total_size;
+
+    ld.param.u64    addr_predicted, [d_predicted];
+    ld.param.u64    addr_target, [d_target];
+    ld.param.u64    addr_gradient, [d_gradient];
+    ld.param.u32    total_size, [n];
+
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_MSE_GRADIENT;
+
+    cvta.to.global.u64  ptr_predicted, addr_predicted;
+    cvta.to.global.u64  ptr_target, addr_target;
+    cvta.to.global.u64  ptr_gradient, addr_gradient;
+
+    mul.wide.u32    byte_offset, idx, 4;
+
+    add.u64         ptr_predicted, ptr_predicted, byte_offset;
+    ld.global.f32   val_predicted, [ptr_predicted];
+
+    add.u64         ptr_target, ptr_target, byte_offset;
+    ld.global.f32   val_target, [ptr_target];
+
+    // Compute gradient: (2/n) * (predicted - target)
+    sub.f32         val_diff, val_predicted, val_target;
+    mov.f32         two, 2.0;
+    cvt.rn.f32.u32  n_float, total_size;
+    div.approx.f32  scale, two, n_float;
+    mul.f32         val_gradient, val_diff, scale;
+
+    add.u64         ptr_gradient, ptr_gradient, byte_offset;
+    st.global.f32   [ptr_gradient], val_gradient;
+
+$EXIT_MSE_GRADIENT:
+    ret;
+}
+
+
+// gradient[i] = 2 * (predicted[i] - target[i])
+// For MSE, divide by n: gradient[i] = 2 * (predicted[i] - target[i]) / n
+.visible .entry l2_gradient(
+    .param .u64 d_predicted,
+    .param .u64 d_target,
+    .param .u64 d_gradient,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_predicted, val_target, val_diff, val_gradient;
+    .reg .f32       two;
+    .reg .u64       addr_predicted, addr_target, addr_gradient;
+    .reg .u64       ptr_predicted, ptr_target, ptr_gradient;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx;
+    .reg .u32       total_size;
+
+    ld.param.u64    addr_predicted, [d_predicted];
+    ld.param.u64    addr_target, [d_target];
+    ld.param.u64    addr_gradient, [d_gradient];
+    ld.param.u32    total_size, [n];
+
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_L2_GRADIENT;
+
+    cvta.to.global.u64  ptr_predicted, addr_predicted;
+    cvta.to.global.u64  ptr_target, addr_target;
+    cvta.to.global.u64  ptr_gradient, addr_gradient;
+
+    // Compute byte offset
+    mul.wide.u32    byte_offset, idx, 4;
+
+    // Load values
+    add.u64         ptr_predicted, ptr_predicted, byte_offset;
+    ld.global.f32   val_predicted, [ptr_predicted];
+
+    add.u64         ptr_target, ptr_target, byte_offset;
+    ld.global.f32   val_target, [ptr_target];
+
+    // Compute gradient: 2 * (predicted - target)
+    sub.f32         val_diff, val_predicted, val_target;
+    mov.f32         two, 2.0;
+    mul.f32         val_gradient, val_diff, two;
+
+    // Store result
+    add.u64         ptr_gradient, ptr_gradient, byte_offset;
+    st.global.f32   [ptr_gradient], val_gradient;
+
+$EXIT_L2_GRADIENT:
+    ret;
+}

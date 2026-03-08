@@ -1,0 +1,277 @@
+.version 9.0
+.target sm_70
+.address_size 64
+
+
+
+// Compute squared differences: squared_diff[i] = (predicted[i] - target[i])^2
+.visible .entry l2_squared_diff(
+    .param .u64 d_predicted,
+    .param .u64 d_target,
+    .param .u64 d_squared_diff,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_predicted, val_target, val_diff, val_squared_diff;
+    .reg .u64       addr_predicted, addr_target, addr_squared_diff;
+    .reg .u64       ptr_predicted, ptr_target, ptr_squared_diff;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx;
+    .reg .u32       total_size;
+
+    ld.param.u64    addr_predicted, [d_predicted];
+    ld.param.u64    addr_target, [d_target];
+    ld.param.u64    addr_squared_diff, [d_squared_diff];
+    ld.param.u32    total_size, [n];
+
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_L2_SQUARED_DIFF;
+
+    cvta.to.global.u64  ptr_predicted, addr_predicted;
+    cvta.to.global.u64  ptr_target, addr_target;
+    cvta.to.global.u64  ptr_squared_diff, addr_squared_diff;
+
+    // Compute byte offset: idx * sizeof(float)
+    mul.wide.u32    byte_offset, idx, 4;
+
+    // Load predicted[idx]
+    add.u64         ptr_predicted, ptr_predicted, byte_offset;
+    ld.global.f32   val_predicted, [ptr_predicted];
+
+    // Load target[idx]
+    add.u64         ptr_target, ptr_target, byte_offset;
+    ld.global.f32   val_target, [ptr_target];
+
+    // Compute difference: diff = predicted - target
+    sub.f32         val_diff, val_predicted, val_target;
+
+    // Compute squared difference: squared_diff = diff * diff
+    mul.f32         val_squared_diff, val_diff, val_diff;
+
+    add.u64         ptr_squared_diff, ptr_squared_diff, byte_offset;
+    st.global.f32   [ptr_squared_diff], val_squared_diff;
+
+$EXIT_L2_SQUARED_DIFF:
+    ret;
+}
+
+// partial_sum = sum_i((predicted[i] - target[i])^2)
+.visible .entry l2_norm_reduce(
+    .param .u64 d_predicted,
+    .param .u64 d_target,
+    .param .u64 d_partial_sums,
+    .param .u32 n
+)
+{
+    .shared .align 4 .f32 shared_data[256];
+
+    .reg .pred      p_bounds, p_reduce, p_loop;
+    .reg .f32       val_predicted, val_target, val_diff, val_squared;
+    .reg .f32       val_local, val_partner, val_sum;
+    .reg .u64       addr_predicted, addr_target, addr_partial;
+    .reg .u64       ptr_predicted, ptr_target, ptr_partial;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       stride, partner_idx;
+    .reg .u32       shared_offset;
+
+    ld.param.u64    addr_predicted, [d_predicted];
+    ld.param.u64    addr_target, [d_target];
+    ld.param.u64    addr_partial, [d_partial_sums];
+    ld.param.u32    total_size, [n];
+
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    mov.f32         val_local, 0.0;
+
+    // Bounds check - load and compute if within bounds
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $STORE_TO_SHARED;
+
+    cvta.to.global.u64  ptr_predicted, addr_predicted;
+    cvta.to.global.u64  ptr_target, addr_target;
+
+    mul.wide.u32    byte_offset, idx, 4;
+
+    // Load predicted[idx]
+    add.u64         ptr_predicted, ptr_predicted, byte_offset;
+    ld.global.f32   val_predicted, [ptr_predicted];
+
+    // Load target[idx]
+    add.u64         ptr_target, ptr_target, byte_offset;
+    ld.global.f32   val_target, [ptr_target];
+
+    // Compute squared difference
+    sub.f32         val_diff, val_predicted, val_target;
+    mul.f32         val_local, val_diff, val_diff;
+
+$STORE_TO_SHARED:
+    // Store to shared memory for reduction
+    mul.lo.u32      shared_offset, tid, 4;
+    st.shared.f32   [shared_data + shared_offset], val_local;
+    bar.sync        0;
+
+    // Block reduction (tree-based)
+    shr.u32         stride, ntid, 1;
+
+$REDUCE_LOOP:
+    setp.eq.u32     p_loop, stride, 0;
+    @p_loop bra     $WRITE_PARTIAL_SUM;
+
+    setp.ge.u32     p_reduce, tid, stride;
+    @p_reduce bra   $SKIP_REDUCE;
+
+    // Load local value
+    ld.shared.f32   val_local, [shared_data + shared_offset];
+
+    // Load partner value
+    add.u32         partner_idx, tid, stride;
+    mul.lo.u32      partner_idx, partner_idx, 4;
+    ld.shared.f32   val_partner, [shared_data + partner_idx];
+
+    // Sum and store back
+    add.f32         val_sum, val_local, val_partner;
+    st.shared.f32   [shared_data + shared_offset], val_sum;
+
+$SKIP_REDUCE:
+    bar.sync        0;
+    shr.u32         stride, stride, 1;
+    bra             $REDUCE_LOOP;
+
+$WRITE_PARTIAL_SUM:
+    // Thread 0 writes block's partial sum
+    setp.ne.u32     p_bounds, tid, 0;
+    @p_bounds bra   $EXIT_L2_NORM;
+
+    ld.shared.f32   val_sum, [shared_data];
+    cvta.to.global.u64  ptr_partial, addr_partial;
+    mul.wide.u32    byte_offset, ctaid, 4;
+    add.u64         ptr_partial, ptr_partial, byte_offset;
+    st.global.f32   [ptr_partial], val_sum;
+
+$EXIT_L2_NORM:
+    ret;
+}
+
+
+
+// partial_sum = (1/n) * sum_i((predicted[i] - target[i])^2)
+.visible .entry mse_reduce(
+    .param .u64 d_predicted,
+    .param .u64 d_target,
+    .param .u64 d_partial_sums,
+    .param .u32 n
+)
+{
+    .shared .align 4 .f32 shared_data[256];
+
+    .reg .pred      p_bounds, p_reduce, p_loop;
+    .reg .f32       val_predicted, val_target, val_diff, val_squared;
+    .reg .f32       val_local, val_partner, val_sum;
+    .reg .f32       inv_n;
+    .reg .u64       addr_predicted, addr_target, addr_partial;
+    .reg .u64       ptr_predicted, ptr_target, ptr_partial;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       stride, partner_idx;
+    .reg .u32       shared_offset;
+
+    ld.param.u64    addr_predicted, [d_predicted];
+    ld.param.u64    addr_target, [d_target];
+    ld.param.u64    addr_partial, [d_partial_sums];
+    ld.param.u32    total_size, [n];
+
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    mov.f32         val_local, 0.0;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $MSE_STORE_TO_SHARED;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_predicted, addr_predicted;
+    cvta.to.global.u64  ptr_target, addr_target;
+
+    // Compute byte offset
+    mul.wide.u32    byte_offset, idx, 4;
+
+    // Load predicted[idx]
+    add.u64         ptr_predicted, ptr_predicted, byte_offset;
+    ld.global.f32   val_predicted, [ptr_predicted];
+
+    // Load target[idx]
+    add.u64         ptr_target, ptr_target, byte_offset;
+    ld.global.f32   val_target, [ptr_target];
+
+    // Compute squared difference
+    sub.f32         val_diff, val_predicted, val_target;
+    mul.f32         val_local, val_diff, val_diff;
+
+$MSE_STORE_TO_SHARED:
+    // Store to shared memory for reduction
+    mul.lo.u32      shared_offset, tid, 4;
+    st.shared.f32   [shared_data + shared_offset], val_local;
+    bar.sync        0;
+
+    // Block reduction (tree-based)
+    shr.u32         stride, ntid, 1;
+
+$MSE_REDUCE_LOOP:
+    setp.eq.u32     p_loop, stride, 0;
+    @p_loop bra     $MSE_WRITE_PARTIAL;
+
+    setp.ge.u32     p_reduce, tid, stride;
+    @p_reduce bra   $MSE_SKIP_REDUCE;
+
+    // Load local value
+    ld.shared.f32   val_local, [shared_data + shared_offset];
+
+    // Load partner value
+    add.u32         partner_idx, tid, stride;
+    mul.lo.u32      partner_idx, partner_idx, 4;
+    ld.shared.f32   val_partner, [shared_data + partner_idx];
+
+    // Sum and store back
+    add.f32         val_sum, val_local, val_partner;
+    st.shared.f32   [shared_data + shared_offset], val_sum;
+
+$MSE_SKIP_REDUCE:
+    bar.sync        0;
+    shr.u32         stride, stride, 1;
+    bra             $MSE_REDUCE_LOOP;
+
+$MSE_WRITE_PARTIAL:
+    // Thread 0 writes block's partial sum divided by n (for MSE)
+    setp.ne.u32     p_bounds, tid, 0;
+    @p_bounds bra   $EXIT_MSE;
+
+    ld.shared.f32   val_sum, [shared_data];
+    
+    // Divide by n for mean: sum / n
+    cvt.rn.f32.u32  inv_n, total_size;
+    div.approx.f32  val_sum, val_sum, inv_n;
+    
+    cvta.to.global.u64  ptr_partial, addr_partial;
+    mul.wide.u32    byte_offset, ctaid, 4;
+    add.u64         ptr_partial, ptr_partial, byte_offset;
+    st.global.f32   [ptr_partial], val_sum;
+
+$EXIT_MSE:
+    ret;
+}
+
+
