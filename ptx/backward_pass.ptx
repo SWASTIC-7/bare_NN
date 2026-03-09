@@ -1,0 +1,799 @@
+.version 9.0
+.target sm_70
+.address_size 64
+
+// ============================================================================
+// General CNN Backward Pass Kernels
+// Reusable for any layer dimensions
+// ============================================================================
+
+
+// ============================================================================
+// bp_sigmoid_grad: Gradient through sigmoid activation
+// ============================================================================
+// d_preact[i] = d_output[i] * sigmoid(preact[i]) * (1 - sigmoid(preact[i]))
+// Parameters:
+//   d_preact: output gradient w.r.t. preactivation
+//   d_output: gradient from next layer
+//   preact: preactivation values
+//   n: total elements
+// ============================================================================
+
+.visible .entry bp_sigmoid_grad(
+    .param .u64 d_preact,
+    .param .u64 d_output,
+    .param .u64 preact,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_d_output, val_preact, sigmoid_val, one_minus, grad;
+    .reg .f32       neg_preact, exp_val, one_plus_exp;
+    .reg .u64       addr_d_preact, addr_d_output, addr_preact;
+    .reg .u64       ptr_d_preact, ptr_d_output, ptr_preact;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .f32       one;
+
+    // Load parameters
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.u64    addr_d_output, [d_output];
+    ld.param.u64    addr_preact, [preact];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_SIGMOID;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+    cvta.to.global.u64  ptr_d_output, addr_d_output;
+    cvta.to.global.u64  ptr_preact, addr_preact;
+
+    // Load d_output[idx] and preact[idx]
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_d_output, ptr_d_output, byte_offset;
+    add.u64         ptr_preact, ptr_preact, byte_offset;
+    ld.global.f32   val_d_output, [ptr_d_output];
+    ld.global.f32   val_preact, [ptr_preact];
+
+    // Compute sigmoid: sigmoid_val = 1 / (1 + exp(-preact))
+    mov.f32         one, 1.0;
+    neg.f32         neg_preact, val_preact;
+    ex2.approx.f32  exp_val, neg_preact;           // 2^(-preact), approx for e^(-preact)
+    mul.f32         neg_preact, neg_preact, 0f3FB8AA3B;  // -preact * log2(e) for accurate exp
+    ex2.approx.f32  exp_val, neg_preact;
+    add.f32         one_plus_exp, one, exp_val;
+    rcp.approx.f32  sigmoid_val, one_plus_exp;
+
+    // Compute gradient: d_output * sigmoid * (1 - sigmoid)
+    sub.f32         one_minus, one, sigmoid_val;
+    mul.f32         grad, sigmoid_val, one_minus;
+    mul.f32         grad, val_d_output, grad;
+
+    // Store result
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    st.global.f32   [ptr_d_preact], grad;
+
+$EXIT_BP_SIGMOID:
+    ret;
+}
+
+
+// ============================================================================
+// bp_fc_weight: Fully connected layer weight gradient
+// ============================================================================
+// d_weight[out * in_size + in] = d_preact[out] * prev_output[in]
+// Parameters:
+//   d_weight: gradient w.r.t. weights
+//   d_preact: gradient w.r.t. preactivation
+//   prev_output: output from previous layer
+//   in_size: input size
+//   out_size: output size
+//   n: total elements = in_size * out_size
+// ============================================================================
+
+.visible .entry bp_fc_weight(
+    .param .u64 d_weight,
+    .param .u64 d_preact,
+    .param .u64 prev_output,
+    .param .u32 in_size,
+    .param .u32 out_size,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_d_preact, val_prev_output, grad;
+    .reg .u64       addr_d_weight, addr_d_preact, addr_prev_output;
+    .reg .u64       ptr_d_weight, ptr_d_preact, ptr_prev_output;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       out_idx, in_idx, v_in_size;
+
+    // Load parameters
+    ld.param.u64    addr_d_weight, [d_weight];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.u64    addr_prev_output, [prev_output];
+    ld.param.u32    v_in_size, [in_size];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_FC_W;
+
+    // Decompose: idx = out_idx * in_size + in_idx
+    div.u32         out_idx, idx, v_in_size;
+    rem.u32         in_idx, idx, v_in_size;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_d_weight, addr_d_weight;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+    cvta.to.global.u64  ptr_prev_output, addr_prev_output;
+
+    // Load d_preact[out_idx] and prev_output[in_idx]
+    mul.wide.u32    byte_offset, out_idx, 4;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    mul.wide.u32    byte_offset, in_idx, 4;
+    add.u64         ptr_prev_output, ptr_prev_output, byte_offset;
+    ld.global.f32   val_prev_output, [ptr_prev_output];
+
+    // Compute weight gradient
+    mul.f32         grad, val_d_preact, val_prev_output;
+
+    // Store result
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_d_weight, ptr_d_weight, byte_offset;
+    st.global.f32   [ptr_d_weight], grad;
+
+$EXIT_BP_FC_W:
+    ret;
+}
+
+
+// ============================================================================
+// bp_fc_bias: Fully connected layer bias gradient
+// ============================================================================
+// bias[i] += dt * d_preact[i]
+// Parameters:
+//   bias: bias tensor
+//   d_preact: gradient w.r.t. preactivation
+//   dt: learning rate
+//   n: number of bias elements
+// ============================================================================
+
+.visible .entry bp_fc_bias(
+    .param .u64 bias,
+    .param .u64 d_preact,
+    .param .f32 dt,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_bias, val_d_preact, v_dt, update;
+    .reg .u64       addr_bias, addr_d_preact;
+    .reg .u64       ptr_bias, ptr_d_preact;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+
+    // Load parameters
+    ld.param.u64    addr_bias, [bias];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.f32    v_dt, [dt];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_FC_BIAS;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_bias, addr_bias;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+
+    // Load values
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_bias, ptr_bias, byte_offset;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_bias, [ptr_bias];
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    // Update: bias += dt * d_preact
+    fma.rn.f32      update, v_dt, val_d_preact, val_bias;
+
+    // Store result
+    st.global.f32   [ptr_bias], update;
+
+$EXIT_BP_FC_BIAS:
+    ret;
+}
+
+
+// ============================================================================
+// bp_fc_output: Backpropagate through FC layer to previous layer output
+// ============================================================================
+// d_output[in] += weight[out * in_size + in] * d_preact[out]
+// Uses atomicAdd since multiple outs contribute to same in
+// Parameters:
+//   d_output: gradient w.r.t. previous layer output (must be zeroed first)
+//   weight: weight tensor
+//   d_preact: gradient w.r.t. preactivation
+//   in_size: input size
+//   out_size: output size
+//   n: total elements = in_size * out_size
+// ============================================================================
+
+.visible .entry bp_fc_output(
+    .param .u64 d_output,
+    .param .u64 weight,
+    .param .u64 d_preact,
+    .param .u32 in_size,
+    .param .u32 out_size,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_weight, val_d_preact, contribution;
+    .reg .u64       addr_d_output, addr_weight, addr_d_preact;
+    .reg .u64       ptr_d_output, ptr_weight, ptr_d_preact;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       out_idx, in_idx, v_in_size;
+
+    // Load parameters
+    ld.param.u64    addr_d_output, [d_output];
+    ld.param.u64    addr_weight, [weight];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.u32    v_in_size, [in_size];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_FC_OUT;
+
+    // Decompose: idx = out_idx * in_size + in_idx
+    div.u32         out_idx, idx, v_in_size;
+    rem.u32         in_idx, idx, v_in_size;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_d_output, addr_d_output;
+    cvta.to.global.u64  ptr_weight, addr_weight;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+
+    // Load weight[idx] and d_preact[out_idx]
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_weight, ptr_weight, byte_offset;
+    ld.global.f32   val_weight, [ptr_weight];
+
+    mul.wide.u32    byte_offset, out_idx, 4;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    // Compute contribution
+    mul.f32         contribution, val_weight, val_d_preact;
+
+    // Atomic add to d_output[in_idx]
+    mul.wide.u32    byte_offset, in_idx, 4;
+    add.u64         ptr_d_output, ptr_d_output, byte_offset;
+    atom.global.add.f32 contribution, [ptr_d_output], contribution;
+
+$EXIT_BP_FC_OUT:
+    ret;
+}
+
+
+// ============================================================================
+// bp_pooling_weight: Pooling layer weight gradient
+// ============================================================================
+// d_weight[ky * kw + kx] += d_preact[c][oy][ox] * prev_output[c][oy*kh+ky][ox*kw+kx]
+// Averaged by normalization factor
+// Parameters:
+//   d_weight: gradient w.r.t. pooling weights [kh][kw]
+//   d_preact: gradient w.r.t. preactivation [channels][out_h][out_w]
+//   prev_output: previous layer output [channels][in_h][in_w]
+//   channels: number of channels
+//   in_h, in_w: input dimensions
+//   kh, kw: kernel dimensions
+//   out_h, out_w: output dimensions
+//   norm: normalization factor (channels * out_h * out_w)
+//   n: total work items = kh * kw * channels * out_h * out_w
+// ============================================================================
+
+.visible .entry bp_pooling_weight(
+    .param .u64 d_weight,
+    .param .u64 d_preact,
+    .param .u64 prev_output,
+    .param .u32 channels,
+    .param .u32 in_h,
+    .param .u32 in_w,
+    .param .u32 kh,
+    .param .u32 kw,
+    .param .u32 out_h,
+    .param .u32 out_w,
+    .param .f32 norm,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_d_preact, val_prev_output, contribution, v_norm, inv_norm;
+    .reg .u64       addr_d_weight, addr_d_preact, addr_prev_output;
+    .reg .u64       ptr_d_weight, ptr_d_preact, ptr_prev_output;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       kx, ky, c, oy, ox, tmp;
+    .reg .u32       v_kw, v_kh, v_channels, v_out_h, v_out_w, v_in_h, v_in_w;
+    .reg .u32       input_y, input_x, input_idx, output_idx, weight_idx;
+    .reg .u32       out_spatial, in_spatial;
+
+    // Load parameters
+    ld.param.u64    addr_d_weight, [d_weight];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.u64    addr_prev_output, [prev_output];
+    ld.param.u32    v_channels, [channels];
+    ld.param.u32    v_in_h, [in_h];
+    ld.param.u32    v_in_w, [in_w];
+    ld.param.u32    v_kh, [kh];
+    ld.param.u32    v_kw, [kw];
+    ld.param.u32    v_out_h, [out_h];
+    ld.param.u32    v_out_w, [out_w];
+    ld.param.f32    v_norm, [norm];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_POOL_W;
+
+    // Decompose: idx -> (kx, ky, c, oy, ox)
+    mov.u32         tmp, idx;
+    rem.u32         kx, tmp, v_kw;
+    div.u32         tmp, tmp, v_kw;
+    rem.u32         ky, tmp, v_kh;
+    div.u32         tmp, tmp, v_kh;
+    rem.u32         c, tmp, v_channels;
+    div.u32         tmp, tmp, v_channels;
+    rem.u32         oy, tmp, v_out_h;
+    div.u32         tmp, tmp, v_out_h;
+    rem.u32         ox, tmp, v_out_w;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_d_weight, addr_d_weight;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+    cvta.to.global.u64  ptr_prev_output, addr_prev_output;
+
+    // Load d_preact[c][oy][ox]
+    mul.u32         out_spatial, v_out_h, v_out_w;
+    mul.u32         output_idx, c, out_spatial;
+    mad.lo.u32      output_idx, oy, v_out_w, output_idx;
+    add.u32         output_idx, output_idx, ox;
+    mul.wide.u32    byte_offset, output_idx, 4;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    // Load prev_output[c][oy*kh+ky][ox*kw+kx]
+    mul.u32         in_spatial, v_in_h, v_in_w;
+    mul.u32         input_idx, c, in_spatial;
+    mad.lo.u32      input_y, oy, v_kh, ky;
+    mad.lo.u32      input_x, ox, v_kw, kx;
+    mad.lo.u32      input_idx, input_y, v_in_w, input_idx;
+    add.u32         input_idx, input_idx, input_x;
+    mul.wide.u32    byte_offset, input_idx, 4;
+    add.u64         ptr_prev_output, ptr_prev_output, byte_offset;
+    ld.global.f32   val_prev_output, [ptr_prev_output];
+
+    // Compute contribution with normalization
+    rcp.approx.f32  inv_norm, v_norm;
+    mul.f32         contribution, val_d_preact, val_prev_output;
+    mul.f32         contribution, contribution, inv_norm;
+
+    // Atomic add to d_weight[ky * kw + kx]
+    mad.lo.u32      weight_idx, ky, v_kw, kx;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_d_weight, ptr_d_weight, byte_offset;
+    atom.global.add.f32 contribution, [ptr_d_weight], contribution;
+
+$EXIT_BP_POOL_W:
+    ret;
+}
+
+
+// ============================================================================
+// bp_pooling_bias_shared: Pooling layer shared bias gradient
+// ============================================================================
+// bias[0] += dt * sum(d_preact) / n
+// Parameters:
+//   bias: single shared bias
+//   d_preact: gradient tensor
+//   dt: learning rate
+//   n: total elements
+// ============================================================================
+
+.visible .entry bp_pooling_bias_shared(
+    .param .u64 bias,
+    .param .u64 d_preact,
+    .param .f32 dt,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_d_preact, v_dt, float_n, inv_n, contribution;
+    .reg .u64       addr_bias, addr_d_preact;
+    .reg .u64       ptr_bias, ptr_d_preact;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+
+    // Load parameters
+    ld.param.u64    addr_bias, [bias];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.f32    v_dt, [dt];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_POOL_BIAS;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_bias, addr_bias;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+
+    // Load d_preact[idx]
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    // Compute contribution: dt * d_preact[idx] / n
+    cvt.rn.f32.u32  float_n, total_size;
+    rcp.approx.f32  inv_n, float_n;
+    mul.f32         contribution, v_dt, val_d_preact;
+    mul.f32         contribution, contribution, inv_n;
+
+    // Atomic add to bias[0]
+    atom.global.add.f32 contribution, [ptr_bias], contribution;
+
+$EXIT_BP_POOL_BIAS:
+    ret;
+}
+
+
+// ============================================================================
+// bp_pooling_output: Backpropagate through pooling to previous layer
+// ============================================================================
+// d_output[c][oy*kh+ky][ox*kw+kx] += weight[ky*kw+kx] * d_preact[c][oy][ox]
+// Parameters:
+//   d_output: gradient w.r.t. previous layer output [channels][in_h][in_w]
+//   weight: pooling weights [kh][kw]
+//   d_preact: gradient w.r.t. preactivation [channels][out_h][out_w]
+//   channels, in_h, in_w, kh, kw, out_h, out_w: dimensions
+//   n: total work items = kh * kw * channels * out_h * out_w
+// ============================================================================
+
+.visible .entry bp_pooling_output(
+    .param .u64 d_output,
+    .param .u64 weight,
+    .param .u64 d_preact,
+    .param .u32 channels,
+    .param .u32 in_h,
+    .param .u32 in_w,
+    .param .u32 kh,
+    .param .u32 kw,
+    .param .u32 out_h,
+    .param .u32 out_w,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_weight, val_d_preact, contribution;
+    .reg .u64       addr_d_output, addr_weight, addr_d_preact;
+    .reg .u64       ptr_d_output, ptr_weight, ptr_d_preact;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       kx, ky, c, oy, ox, tmp;
+    .reg .u32       v_kw, v_kh, v_channels, v_out_h, v_out_w, v_in_h, v_in_w;
+    .reg .u32       input_y, input_x, input_idx, output_idx, weight_idx;
+    .reg .u32       out_spatial, in_spatial;
+
+    // Load parameters
+    ld.param.u64    addr_d_output, [d_output];
+    ld.param.u64    addr_weight, [weight];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.u32    v_channels, [channels];
+    ld.param.u32    v_in_h, [in_h];
+    ld.param.u32    v_in_w, [in_w];
+    ld.param.u32    v_kh, [kh];
+    ld.param.u32    v_kw, [kw];
+    ld.param.u32    v_out_h, [out_h];
+    ld.param.u32    v_out_w, [out_w];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_POOL_OUT;
+
+    // Decompose: idx -> (kx, ky, c, oy, ox)
+    mov.u32         tmp, idx;
+    rem.u32         kx, tmp, v_kw;
+    div.u32         tmp, tmp, v_kw;
+    rem.u32         ky, tmp, v_kh;
+    div.u32         tmp, tmp, v_kh;
+    rem.u32         c, tmp, v_channels;
+    div.u32         tmp, tmp, v_channels;
+    rem.u32         oy, tmp, v_out_h;
+    div.u32         tmp, tmp, v_out_h;
+    rem.u32         ox, tmp, v_out_w;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_d_output, addr_d_output;
+    cvta.to.global.u64  ptr_weight, addr_weight;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+
+    // Load weight[ky * kw + kx]
+    mad.lo.u32      weight_idx, ky, v_kw, kx;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_weight, ptr_weight, byte_offset;
+    ld.global.f32   val_weight, [ptr_weight];
+
+    // Load d_preact[c][oy][ox]
+    mul.u32         out_spatial, v_out_h, v_out_w;
+    mul.u32         output_idx, c, out_spatial;
+    mad.lo.u32      output_idx, oy, v_out_w, output_idx;
+    add.u32         output_idx, output_idx, ox;
+    mul.wide.u32    byte_offset, output_idx, 4;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    // Compute contribution
+    mul.f32         contribution, val_weight, val_d_preact;
+
+    // Atomic add to d_output[c][oy*kh+ky][ox*kw+kx]
+    mul.u32         in_spatial, v_in_h, v_in_w;
+    mul.u32         input_idx, c, in_spatial;
+    mad.lo.u32      input_y, oy, v_kh, ky;
+    mad.lo.u32      input_x, ox, v_kw, kx;
+    mad.lo.u32      input_idx, input_y, v_in_w, input_idx;
+    add.u32         input_idx, input_idx, input_x;
+    mul.wide.u32    byte_offset, input_idx, 4;
+    add.u64         ptr_d_output, ptr_d_output, byte_offset;
+    atom.global.add.f32 contribution, [ptr_d_output], contribution;
+
+$EXIT_BP_POOL_OUT:
+    ret;
+}
+
+
+// ============================================================================
+// bp_conv2d_weight: Convolution layer weight gradient
+// ============================================================================
+// d_weight[f][ky][kx] += d_preact[f][oy][ox] * prev_output[oy+ky][ox+kx] / norm
+// Parameters:
+//   d_weight: gradient w.r.t. conv weights [num_filters][kh][kw]
+//   d_preact: gradient w.r.t. preactivation [num_filters][out_h][out_w]
+//   prev_output: previous layer output [in_h][in_w]
+//   in_h, in_w: input dimensions
+//   kh, kw: kernel dimensions
+//   num_filters: number of filters
+//   out_h, out_w: output dimensions
+//   norm: normalization factor (out_h * out_w)
+//   n: total work items = num_filters * kh * kw * out_h * out_w
+// ============================================================================
+
+.visible .entry bp_conv2d_weight(
+    .param .u64 d_weight,
+    .param .u64 d_preact,
+    .param .u64 prev_output,
+    .param .u32 in_h,
+    .param .u32 in_w,
+    .param .u32 kh,
+    .param .u32 kw,
+    .param .u32 num_filters,
+    .param .u32 out_h,
+    .param .u32 out_w,
+    .param .f32 norm,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_d_preact, val_prev_output, contribution, v_norm, inv_norm;
+    .reg .u64       addr_d_weight, addr_d_preact, addr_prev_output;
+    .reg .u64       ptr_d_weight, ptr_d_preact, ptr_prev_output;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       f, kx, ky, oy, ox, tmp;
+    .reg .u32       v_kw, v_kh, v_num_filters, v_out_h, v_out_w, v_in_w;
+    .reg .u32       input_y, input_x, input_idx, output_idx, weight_idx;
+    .reg .u32       kernel_size, out_spatial;
+
+    // Load parameters
+    ld.param.u64    addr_d_weight, [d_weight];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.u64    addr_prev_output, [prev_output];
+    ld.param.u32    v_in_w, [in_w];
+    ld.param.u32    v_kh, [kh];
+    ld.param.u32    v_kw, [kw];
+    ld.param.u32    v_num_filters, [num_filters];
+    ld.param.u32    v_out_h, [out_h];
+    ld.param.u32    v_out_w, [out_w];
+    ld.param.f32    v_norm, [norm];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_CONV_W;
+
+    // Decompose: idx -> (f, ky, kx, oy, ox)
+    mov.u32         tmp, idx;
+    rem.u32         f, tmp, v_num_filters;
+    div.u32         tmp, tmp, v_num_filters;
+    rem.u32         ky, tmp, v_kh;
+    div.u32         tmp, tmp, v_kh;
+    rem.u32         kx, tmp, v_kw;
+    div.u32         tmp, tmp, v_kw;
+    rem.u32         oy, tmp, v_out_h;
+    div.u32         tmp, tmp, v_out_h;
+    rem.u32         ox, tmp, v_out_w;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_d_weight, addr_d_weight;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+    cvta.to.global.u64  ptr_prev_output, addr_prev_output;
+
+    // Load d_preact[f][oy][ox]
+    mul.u32         out_spatial, v_out_h, v_out_w;
+    mul.u32         output_idx, f, out_spatial;
+    mad.lo.u32      output_idx, oy, v_out_w, output_idx;
+    add.u32         output_idx, output_idx, ox;
+    mul.wide.u32    byte_offset, output_idx, 4;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    // Load prev_output[oy+ky][ox+kx]
+    add.u32         input_y, oy, ky;
+    add.u32         input_x, ox, kx;
+    mad.lo.u32      input_idx, input_y, v_in_w, input_x;
+    mul.wide.u32    byte_offset, input_idx, 4;
+    add.u64         ptr_prev_output, ptr_prev_output, byte_offset;
+    ld.global.f32   val_prev_output, [ptr_prev_output];
+
+    // Compute contribution with normalization
+    rcp.approx.f32  inv_norm, v_norm;
+    mul.f32         contribution, val_d_preact, val_prev_output;
+    mul.f32         contribution, contribution, inv_norm;
+
+    // Atomic add to d_weight[f][ky][kx]
+    mul.u32         kernel_size, v_kh, v_kw;
+    mul.u32         weight_idx, f, kernel_size;
+    mad.lo.u32      weight_idx, ky, v_kw, weight_idx;
+    add.u32         weight_idx, weight_idx, kx;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_d_weight, ptr_d_weight, byte_offset;
+    atom.global.add.f32 contribution, [ptr_d_weight], contribution;
+
+$EXIT_BP_CONV_W:
+    ret;
+}
+
+
+// ============================================================================
+// bp_conv2d_bias: Convolution layer per-channel bias gradient
+// ============================================================================
+// bias[f] += dt * sum(d_preact[f][:][:]) / norm
+// Parameters:
+//   bias: per-channel bias [num_filters]
+//   d_preact: gradient w.r.t. preactivation [num_filters][out_h][out_w]
+//   dt: learning rate
+//   num_filters: number of filters
+//   out_h, out_w: output dimensions
+//   norm: normalization factor (out_h * out_w)
+//   n: total elements = num_filters * out_h * out_w
+// ============================================================================
+
+.visible .entry bp_conv2d_bias(
+    .param .u64 bias,
+    .param .u64 d_preact,
+    .param .f32 dt,
+    .param .u32 num_filters,
+    .param .u32 out_h,
+    .param .u32 out_w,
+    .param .f32 norm,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_d_preact, v_dt, v_norm, inv_norm, contribution;
+    .reg .u64       addr_bias, addr_d_preact;
+    .reg .u64       ptr_bias, ptr_d_preact;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       f, spatial_idx, v_out_h, v_out_w, out_spatial;
+
+    // Load parameters
+    ld.param.u64    addr_bias, [bias];
+    ld.param.u64    addr_d_preact, [d_preact];
+    ld.param.f32    v_dt, [dt];
+    ld.param.u32    v_out_h, [out_h];
+    ld.param.u32    v_out_w, [out_w];
+    ld.param.f32    v_norm, [norm];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_BP_CONV_BIAS;
+
+    // Compute filter index: f = idx / (out_h * out_w)
+    mul.u32         out_spatial, v_out_h, v_out_w;
+    div.u32         f, idx, out_spatial;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_bias, addr_bias;
+    cvta.to.global.u64  ptr_d_preact, addr_d_preact;
+
+    // Load d_preact[idx]
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_d_preact, ptr_d_preact, byte_offset;
+    ld.global.f32   val_d_preact, [ptr_d_preact];
+
+    // Compute contribution: dt * d_preact / norm
+    rcp.approx.f32  inv_norm, v_norm;
+    mul.f32         contribution, v_dt, val_d_preact;
+    mul.f32         contribution, contribution, inv_norm;
+
+    // Atomic add to bias[f]
+    mul.wide.u32    byte_offset, f, 4;
+    add.u64         ptr_bias, ptr_bias, byte_offset;
+    atom.global.add.f32 contribution, [ptr_bias], contribution;
+
+$EXIT_BP_CONV_BIAS:
+    ret;
+}

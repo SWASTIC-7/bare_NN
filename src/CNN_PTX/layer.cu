@@ -21,6 +21,18 @@ static CUfunction fc_forward_kernel = nullptr;
 static CUfunction apply_grad_kernel = nullptr;
 static CUfunction memset_zero_kernel = nullptr;
 
+// PTX module and kernel handles for backward pass
+static CUmodule backward_module = nullptr;
+static CUfunction bp_sigmoid_grad_kernel = nullptr;
+static CUfunction bp_fc_weight_kernel = nullptr;
+static CUfunction bp_fc_bias_kernel = nullptr;
+static CUfunction bp_fc_output_kernel = nullptr;
+static CUfunction bp_pooling_weight_kernel = nullptr;
+static CUfunction bp_pooling_bias_shared_kernel = nullptr;
+static CUfunction bp_pooling_output_kernel = nullptr;
+static CUfunction bp_conv2d_weight_kernel = nullptr;
+static CUfunction bp_conv2d_bias_kernel = nullptr;
+
 // Error check macro for CUDA Driver API
 #define PTX_CHECK(call)                                                 \
     do {                                                                \
@@ -178,6 +190,40 @@ void cleanup_forward_ptx()
         fc_forward_kernel = nullptr;
         apply_grad_kernel = nullptr;
         memset_zero_kernel = nullptr;
+    }
+}
+
+// Initialize PTX backward pass kernels - call once before using
+void init_backward_ptx(const char* ptx_path)
+{
+    if (backward_module != nullptr) return; // Already initialized
+    
+    PTX_CHECK(cuModuleLoad(&backward_module, ptx_path));
+    PTX_CHECK(cuModuleGetFunction(&bp_sigmoid_grad_kernel, backward_module, "bp_sigmoid_grad"));
+    PTX_CHECK(cuModuleGetFunction(&bp_fc_weight_kernel, backward_module, "bp_fc_weight"));
+    PTX_CHECK(cuModuleGetFunction(&bp_fc_bias_kernel, backward_module, "bp_fc_bias"));
+    PTX_CHECK(cuModuleGetFunction(&bp_fc_output_kernel, backward_module, "bp_fc_output"));
+    PTX_CHECK(cuModuleGetFunction(&bp_pooling_weight_kernel, backward_module, "bp_pooling_weight"));
+    PTX_CHECK(cuModuleGetFunction(&bp_pooling_bias_shared_kernel, backward_module, "bp_pooling_bias_shared"));
+    PTX_CHECK(cuModuleGetFunction(&bp_pooling_output_kernel, backward_module, "bp_pooling_output"));
+    PTX_CHECK(cuModuleGetFunction(&bp_conv2d_weight_kernel, backward_module, "bp_conv2d_weight"));
+    PTX_CHECK(cuModuleGetFunction(&bp_conv2d_bias_kernel, backward_module, "bp_conv2d_bias"));
+}
+
+void cleanup_backward_ptx()
+{
+    if (backward_module != nullptr) {
+        cuModuleUnload(backward_module);
+        backward_module = nullptr;
+        bp_sigmoid_grad_kernel = nullptr;
+        bp_fc_weight_kernel = nullptr;
+        bp_fc_bias_kernel = nullptr;
+        bp_fc_output_kernel = nullptr;
+        bp_pooling_weight_kernel = nullptr;
+        bp_pooling_bias_shared_kernel = nullptr;
+        bp_pooling_output_kernel = nullptr;
+        bp_conv2d_weight_kernel = nullptr;
+        bp_conv2d_bias_kernel = nullptr;
     }
 }
 
@@ -442,4 +488,195 @@ void launch_memset_zero_ptx(float* d_data, int n, int block_size)
     
     PTX_CHECK(cuLaunchKernel(memset_zero_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
 }
+
+// ============================================================================
+// General Backward Pass PTX Launch Functions
+// ============================================================================
+
+// bp_sigmoid_grad: d_preact[i] = d_output[i] * sigmoid(preact[i]) * (1 - sigmoid(preact[i]))
+void launch_bp_sigmoid_grad_ptx(float* d_preact, float* d_output, float* preact, int n, int block_size)
+{
+    if (bp_sigmoid_grad_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    unsigned int N = n;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    void* args[] = { &d_preact, &d_output, &preact, &N };
+    
+    PTX_CHECK(cuLaunchKernel(bp_sigmoid_grad_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_fc_weight: d_weight[out * in_size + in] = d_preact[out] * prev_output[in]
+void launch_bp_fc_weight_ptx(float* d_weight, float* d_preact, float* prev_output,
+                             int in_size, int out_size, int block_size)
+{
+    if (bp_fc_weight_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    unsigned int N = in_size * out_size;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    unsigned int u_in_size = in_size, u_out_size = out_size;
+    
+    void* args[] = { &d_weight, &d_preact, &prev_output, &u_in_size, &u_out_size, &N };
+    
+    PTX_CHECK(cuLaunchKernel(bp_fc_weight_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_fc_bias: bias[i] += dt * d_preact[i]
+void launch_bp_fc_bias_ptx(float* bias, float* d_preact, float dt, int n, int block_size)
+{
+    if (bp_fc_bias_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    unsigned int N = n;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    void* args[] = { &bias, &d_preact, &dt, &N };
+    
+    PTX_CHECK(cuLaunchKernel(bp_fc_bias_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_fc_output: d_output[in] += weight[out * in_size + in] * d_preact[out] (atomicAdd)
+void launch_bp_fc_output_ptx(float* d_output, float* weight, float* d_preact,
+                             int in_size, int out_size, int block_size)
+{
+    if (bp_fc_output_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    unsigned int N = in_size * out_size;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    unsigned int u_in_size = in_size, u_out_size = out_size;
+    
+    void* args[] = { &d_output, &weight, &d_preact, &u_in_size, &u_out_size, &N };
+    
+    PTX_CHECK(cuLaunchKernel(bp_fc_output_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_pooling_weight: Compute pooling weight gradient
+void launch_bp_pooling_weight_ptx(float* d_weight, float* d_preact, float* prev_output,
+                                  int channels, int in_h, int in_w, int kh, int kw,
+                                  int block_size)
+{
+    if (bp_pooling_weight_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    int out_h = in_h / kh;
+    int out_w = in_w / kw;
+    unsigned int N = kh * kw * channels * out_h * out_w;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    float norm = static_cast<float>(channels * out_h * out_w);
+    unsigned int u_channels = channels, u_in_h = in_h, u_in_w = in_w;
+    unsigned int u_kh = kh, u_kw = kw, u_out_h = out_h, u_out_w = out_w;
+    
+    void* args[] = {
+        &d_weight, &d_preact, &prev_output,
+        &u_channels, &u_in_h, &u_in_w, &u_kh, &u_kw, &u_out_h, &u_out_w,
+        &norm, &N
+    };
+    
+    PTX_CHECK(cuLaunchKernel(bp_pooling_weight_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_pooling_bias_shared: bias[0] += dt * sum(d_preact) / n
+void launch_bp_pooling_bias_shared_ptx(float* bias, float* d_preact, float dt, int n, int block_size)
+{
+    if (bp_pooling_bias_shared_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    unsigned int N = n;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    void* args[] = { &bias, &d_preact, &dt, &N };
+    
+    PTX_CHECK(cuLaunchKernel(bp_pooling_bias_shared_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_pooling_output: Backprop through pooling layer
+void launch_bp_pooling_output_ptx(float* d_output, float* weight, float* d_preact,
+                                  int channels, int in_h, int in_w, int kh, int kw,
+                                  int block_size)
+{
+    if (bp_pooling_output_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    int out_h = in_h / kh;
+    int out_w = in_w / kw;
+    unsigned int N = kh * kw * channels * out_h * out_w;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    unsigned int u_channels = channels, u_in_h = in_h, u_in_w = in_w;
+    unsigned int u_kh = kh, u_kw = kw, u_out_h = out_h, u_out_w = out_w;
+    
+    void* args[] = {
+        &d_output, &weight, &d_preact,
+        &u_channels, &u_in_h, &u_in_w, &u_kh, &u_kw, &u_out_h, &u_out_w, &N
+    };
+    
+    PTX_CHECK(cuLaunchKernel(bp_pooling_output_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_conv2d_weight: Compute conv weight gradient
+void launch_bp_conv2d_weight_ptx(float* d_weight, float* d_preact, float* prev_output,
+                                 int in_h, int in_w, int kh, int kw, int num_filters,
+                                 int block_size)
+{
+    if (bp_conv2d_weight_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    int out_h = in_h - kh + 1;
+    int out_w = in_w - kw + 1;
+    unsigned int N = num_filters * kh * kw * out_h * out_w;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    float norm = static_cast<float>(out_h * out_w);
+    unsigned int u_in_h = in_h, u_in_w = in_w, u_kh = kh, u_kw = kw;
+    unsigned int u_num_filters = num_filters, u_out_h = out_h, u_out_w = out_w;
+    
+    void* args[] = {
+        &d_weight, &d_preact, &prev_output,
+        &u_in_h, &u_in_w, &u_kh, &u_kw, &u_num_filters, &u_out_h, &u_out_w,
+        &norm, &N
+    };
+    
+    PTX_CHECK(cuLaunchKernel(bp_conv2d_weight_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
+}
+
+// bp_conv2d_bias: Per-channel bias update with normalization
+void launch_bp_conv2d_bias_ptx(float* bias, float* d_preact, float dt,
+                               int num_filters, int out_h, int out_w, int block_size)
+{
+    if (bp_conv2d_bias_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX backward not initialized. Call init_backward_ptx() first.\n");
+        return;
+    }
+    
+    unsigned int N = num_filters * out_h * out_w;
+    int grid_size = (N + block_size - 1) / block_size;
+    
+    float norm = static_cast<float>(out_h * out_w);
+    unsigned int u_num_filters = num_filters, u_out_h = out_h, u_out_w = out_w;
+    
+    void* args[] = { &bias, &d_preact, &dt, &u_num_filters, &u_out_h, &u_out_w, &norm, &N };
+    
+    PTX_CHECK(cuLaunchKernel(bp_conv2d_bias_kernel, grid_size, 1, 1, block_size, 1, 1, 0, 0, args, nullptr));
 }
