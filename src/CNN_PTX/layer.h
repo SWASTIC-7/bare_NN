@@ -47,3 +47,40 @@ void init_loss_ptx(const char* ptx_path);
 void cleanup_loss_ptx();
 void launch_make_error_ptx(float* d_error, float* d_output, unsigned int label, int n, int block_size = 256);
 void launch_mse_gradient_ptx(float* d_predicted, float* d_target, float* d_gradient, int n, int block_size = 256);
+
+// PTX-based forward pass functions (loaded from forward_pass.ptx)
+void init_forward_ptx(const char* ptx_path);
+void cleanup_forward_ptx();
+
+// General 2D convolution (single-channel input -> multi-filter output)
+void launch_conv2d_ptx(float* d_input, float* d_output, float* d_weight,
+                       int in_h, int in_w, int kh, int kw, int num_filters,
+                       int block_size = 256);
+
+// Multi-channel 2D convolution
+void launch_conv2d_mc_ptx(float* d_input, float* d_output, float* d_weight,
+                          int in_c, int in_h, int in_w, int kh, int kw, int out_c,
+                          int block_size = 256);
+
+// Per-channel bias: output[c][h][w] += bias[c]
+void launch_add_bias_ptx(float* d_data, float* d_bias, int channels, int spatial_size,
+                         int block_size = 256);
+
+// Shared bias: output[i] += bias[0] for all i
+void launch_add_bias_shared_ptx(float* d_data, float* d_bias, int n, int block_size = 256);
+
+// Weighted pooling/subsampling
+void launch_pooling_ptx(float* d_input, float* d_output, float* d_weight,
+                        int channels, int in_h, int in_w, int kh, int kw,
+                        int block_size = 256);
+
+// Fully connected layer
+void launch_fc_forward_ptx(float* d_input, float* d_output, float* d_weight,
+                           int in_size, int out_size, int block_size = 256);
+
+// Gradient application: output[i] += learning_rate * grad[i]
+void launch_apply_grad_ptx(float* d_output, float* d_grad, float learning_rate, int n,
+                           int block_size = 256);
+
+// Zero buffer
+void launch_memset_zero_ptx(float* d_data, int n, int block_size = 256);

@@ -1,0 +1,660 @@
+.version 9.0
+.target sm_70
+.address_size 64
+
+// ============================================================================
+// General CNN Forward Pass Kernels
+// Reusable for any layer dimensions
+// ============================================================================
+
+
+// ============================================================================
+// conv2d: General 2D Convolution
+// ============================================================================
+// input[in_h][in_w] * weight[num_filters][kh][kw] -> output[num_filters][out_h][out_w]
+// Parameters:
+//   d_input: input tensor (flattened)
+//   d_output: output tensor (flattened, must be zeroed before call)
+//   d_weight: weight tensor (flattened)
+//   in_h, in_w: input dimensions
+//   kh, kw: kernel dimensions
+//   num_filters: number of output filters
+//   n: total work items = kh * kw * num_filters * out_h * out_w
+// ============================================================================
+
+.visible .entry conv2d(
+    .param .u64 d_input,
+    .param .u64 d_output,
+    .param .u64 d_weight,
+    .param .u32 in_h,
+    .param .u32 in_w,
+    .param .u32 kh,
+    .param .u32 kw,
+    .param .u32 num_filters,
+    .param .u32 out_h,
+    .param .u32 out_w,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_input, val_weight, val_product;
+    .reg .u64       addr_input, addr_output, addr_weight;
+    .reg .u64       ptr_input, ptr_output, ptr_weight;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       ki, kj, f, oy, ox;
+    .reg .u32       tmp, div1, div2, div3, div4;
+    .reg .u32       input_row, input_col, input_idx;
+    .reg .u32       output_idx, weight_idx;
+    .reg .u32       v_in_w, v_kh, v_kw, v_num_filters, v_out_h, v_out_w;
+    .reg .u32       kernel_size, out_size;
+
+    // Load parameters
+    ld.param.u64    addr_input, [d_input];
+    ld.param.u64    addr_output, [d_output];
+    ld.param.u64    addr_weight, [d_weight];
+    ld.param.u32    v_in_w, [in_w];
+    ld.param.u32    v_kh, [kh];
+    ld.param.u32    v_kw, [kw];
+    ld.param.u32    v_num_filters, [num_filters];
+    ld.param.u32    v_out_h, [out_h];
+    ld.param.u32    v_out_w, [out_w];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_CONV2D;
+
+    // Decompose linear index: idx -> (ki, kj, f, oy, ox)
+    // ki = idx % kw
+    // kj = (idx / kw) % kh
+    // f = (idx / (kw*kh)) % num_filters
+    // oy = (idx / (kw*kh*num_filters)) % out_h
+    // ox = (idx / (kw*kh*num_filters*out_h)) % out_w
+    
+    mov.u32         tmp, idx;
+    rem.u32         ki, tmp, v_kw;
+    div.u32         tmp, tmp, v_kw;
+    rem.u32         kj, tmp, v_kh;
+    div.u32         tmp, tmp, v_kh;
+    rem.u32         f, tmp, v_num_filters;
+    div.u32         tmp, tmp, v_num_filters;
+    rem.u32         oy, tmp, v_out_h;
+    div.u32         tmp, tmp, v_out_h;
+    rem.u32         ox, tmp, v_out_w;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_input, addr_input;
+    cvta.to.global.u64  ptr_output, addr_output;
+    cvta.to.global.u64  ptr_weight, addr_weight;
+
+    // Load input[oy + kj][ox + ki]
+    // input_idx = (oy + kj) * in_w + (ox + ki)
+    add.u32         input_row, oy, kj;
+    add.u32         input_col, ox, ki;
+    mad.lo.u32      input_idx, input_row, v_in_w, input_col;
+    mul.wide.u32    byte_offset, input_idx, 4;
+    add.u64         ptr_input, ptr_input, byte_offset;
+    ld.global.f32   val_input, [ptr_input];
+
+    // Load weight[f][kj][ki]
+    // weight_idx = f * (kh * kw) + kj * kw + ki
+    mul.lo.u32      kernel_size, v_kh, v_kw;
+    mul.lo.u32      weight_idx, f, kernel_size;
+    mad.lo.u32      weight_idx, kj, v_kw, weight_idx;
+    add.u32         weight_idx, weight_idx, ki;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_weight, ptr_weight, byte_offset;
+    ld.global.f32   val_weight, [ptr_weight];
+
+    // Compute product
+    mul.f32         val_product, val_input, val_weight;
+
+    // Atomic add to output[f][oy][ox]
+    // output_idx = f * (out_h * out_w) + oy * out_w + ox
+    mul.lo.u32      out_size, v_out_h, v_out_w;
+    mul.lo.u32      output_idx, f, out_size;
+    mad.lo.u32      output_idx, oy, v_out_w, output_idx;
+    add.u32         output_idx, output_idx, ox;
+    mul.wide.u32    byte_offset, output_idx, 4;
+    add.u64         ptr_output, ptr_output, byte_offset;
+    atom.global.add.f32 val_product, [ptr_output], val_product;
+
+$EXIT_CONV2D:
+    ret;
+}
+
+
+// ============================================================================
+// conv2d_multi_channel: Multi-channel 2D Convolution
+// ============================================================================
+// input[in_c][in_h][in_w] * weight[out_c][in_c][kh][kw] -> output[out_c][out_h][out_w]
+// ============================================================================
+
+.visible .entry conv2d_multi_channel(
+    .param .u64 d_input,
+    .param .u64 d_output,
+    .param .u64 d_weight,
+    .param .u32 in_c,
+    .param .u32 in_h,
+    .param .u32 in_w,
+    .param .u32 kh,
+    .param .u32 kw,
+    .param .u32 out_c,
+    .param .u32 out_h,
+    .param .u32 out_w,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_input, val_weight, val_product;
+    .reg .u64       addr_input, addr_output, addr_weight;
+    .reg .u64       ptr_input, ptr_output, ptr_weight;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       ki, kj, ic, oc, oy, ox;
+    .reg .u32       tmp;
+    .reg .u32       input_idx, output_idx, weight_idx;
+    .reg .u32       v_in_c, v_in_h, v_in_w, v_kh, v_kw, v_out_c, v_out_h, v_out_w;
+    .reg .u32       in_spatial, out_spatial, kernel_size;
+
+    // Load parameters
+    ld.param.u64    addr_input, [d_input];
+    ld.param.u64    addr_output, [d_output];
+    ld.param.u64    addr_weight, [d_weight];
+    ld.param.u32    v_in_c, [in_c];
+    ld.param.u32    v_in_h, [in_h];
+    ld.param.u32    v_in_w, [in_w];
+    ld.param.u32    v_kh, [kh];
+    ld.param.u32    v_kw, [kw];
+    ld.param.u32    v_out_c, [out_c];
+    ld.param.u32    v_out_h, [out_h];
+    ld.param.u32    v_out_w, [out_w];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_CONV2D_MC;
+
+    // Decompose: idx -> (ki, kj, ic, oc, oy, ox)
+    mov.u32         tmp, idx;
+    rem.u32         ki, tmp, v_kw;
+    div.u32         tmp, tmp, v_kw;
+    rem.u32         kj, tmp, v_kh;
+    div.u32         tmp, tmp, v_kh;
+    rem.u32         ic, tmp, v_in_c;
+    div.u32         tmp, tmp, v_in_c;
+    rem.u32         oc, tmp, v_out_c;
+    div.u32         tmp, tmp, v_out_c;
+    rem.u32         oy, tmp, v_out_h;
+    div.u32         tmp, tmp, v_out_h;
+    rem.u32         ox, tmp, v_out_w;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_input, addr_input;
+    cvta.to.global.u64  ptr_output, addr_output;
+    cvta.to.global.u64  ptr_weight, addr_weight;
+
+    // input[ic][oy + kj][ox + ki]
+    mul.lo.u32      in_spatial, v_in_h, v_in_w;
+    mul.lo.u32      input_idx, ic, in_spatial;
+    add.u32         tmp, oy, kj;
+    mad.lo.u32      input_idx, tmp, v_in_w, input_idx;
+    add.u32         tmp, ox, ki;
+    add.u32         input_idx, input_idx, tmp;
+    mul.wide.u32    byte_offset, input_idx, 4;
+    add.u64         ptr_input, ptr_input, byte_offset;
+    ld.global.f32   val_input, [ptr_input];
+
+    // weight[oc][ic][kj][ki]
+    mul.lo.u32      kernel_size, v_kh, v_kw;
+    mul.lo.u32      weight_idx, v_in_c, kernel_size;
+    mul.lo.u32      weight_idx, oc, weight_idx;
+    mul.lo.u32      tmp, ic, kernel_size;
+    add.u32         weight_idx, weight_idx, tmp;
+    mad.lo.u32      weight_idx, kj, v_kw, weight_idx;
+    add.u32         weight_idx, weight_idx, ki;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_weight, ptr_weight, byte_offset;
+    ld.global.f32   val_weight, [ptr_weight];
+
+    // Compute product
+    mul.f32         val_product, val_input, val_weight;
+
+    // Atomic add to output[oc][oy][ox]
+    mul.lo.u32      out_spatial, v_out_h, v_out_w;
+    mul.lo.u32      output_idx, oc, out_spatial;
+    mad.lo.u32      output_idx, oy, v_out_w, output_idx;
+    add.u32         output_idx, output_idx, ox;
+    mul.wide.u32    byte_offset, output_idx, 4;
+    add.u64         ptr_output, ptr_output, byte_offset;
+    atom.global.add.f32 val_product, [ptr_output], val_product;
+
+$EXIT_CONV2D_MC:
+    ret;
+}
+
+
+// ============================================================================
+// add_bias: General bias addition
+// ============================================================================
+// output[c][h][w] += bias[c]
+// Parameters:
+//   d_data: input/output tensor (in-place)
+//   d_bias: bias vector
+//   channels: number of channels
+//   spatial_size: h * w (elements per channel)
+//   n: total elements = channels * spatial_size
+// ============================================================================
+
+.visible .entry add_bias(
+    .param .u64 d_data,
+    .param .u64 d_bias,
+    .param .u32 channels,
+    .param .u32 spatial_size,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_data, val_bias, val_sum;
+    .reg .u64       addr_data, addr_bias;
+    .reg .u64       ptr_data, ptr_bias;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       channel_idx, v_spatial;
+
+    // Load parameters
+    ld.param.u64    addr_data, [d_data];
+    ld.param.u64    addr_bias, [d_bias];
+    ld.param.u32    v_spatial, [spatial_size];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_ADD_BIAS;
+
+    // Compute channel index: channel = idx / spatial_size
+    div.u32         channel_idx, idx, v_spatial;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_data, addr_data;
+    cvta.to.global.u64  ptr_bias, addr_bias;
+
+    // Load data[idx]
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_data, ptr_data, byte_offset;
+    ld.global.f32   val_data, [ptr_data];
+
+    // Load bias[channel]
+    mul.wide.u32    byte_offset, channel_idx, 4;
+    add.u64         ptr_bias, ptr_bias, byte_offset;
+    ld.global.f32   val_bias, [ptr_bias];
+
+    // Add and store
+    add.f32         val_sum, val_data, val_bias;
+    cvta.to.global.u64  ptr_data, addr_data;
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_data, ptr_data, byte_offset;
+    st.global.f32   [ptr_data], val_sum;
+
+$EXIT_ADD_BIAS:
+    ret;
+}
+
+
+// ============================================================================
+// add_bias_shared: Add shared bias to all elements
+// ============================================================================
+// output[i] += bias[0] for all i
+// ============================================================================
+
+.visible .entry add_bias_shared(
+    .param .u64 d_data,
+    .param .u64 d_bias,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_data, val_bias, val_sum;
+    .reg .u64       addr_data, addr_bias;
+    .reg .u64       ptr_data, ptr_bias;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+
+    // Load parameters
+    ld.param.u64    addr_data, [d_data];
+    ld.param.u64    addr_bias, [d_bias];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_ADD_BIAS_SHARED;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_data, addr_data;
+    cvta.to.global.u64  ptr_bias, addr_bias;
+
+    // Load data[idx]
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_data, ptr_data, byte_offset;
+    ld.global.f32   val_data, [ptr_data];
+
+    // Load bias[0]
+    ld.global.f32   val_bias, [ptr_bias];
+
+    // Add and store
+    add.f32         val_sum, val_data, val_bias;
+    st.global.f32   [ptr_data], val_sum;
+
+$EXIT_ADD_BIAS_SHARED:
+    ret;
+}
+
+
+// ============================================================================
+// pooling: General pooling with weighted sum (subsampling)
+// ============================================================================
+// input[c][in_h][in_w] * weight[kh][kw] -> output[c][out_h][out_w]
+// Stride = kernel size (non-overlapping pooling)
+// ============================================================================
+
+.visible .entry pooling(
+    .param .u64 d_input,
+    .param .u64 d_output,
+    .param .u64 d_weight,
+    .param .u32 channels,
+    .param .u32 in_h,
+    .param .u32 in_w,
+    .param .u32 kh,
+    .param .u32 kw,
+    .param .u32 out_h,
+    .param .u32 out_w,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_input, val_weight, val_product;
+    .reg .u64       addr_input, addr_output, addr_weight;
+    .reg .u64       ptr_input, ptr_output, ptr_weight;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       ki, kj, c, oy, ox;
+    .reg .u32       tmp, input_row, input_col;
+    .reg .u32       input_idx, output_idx, weight_idx;
+    .reg .u32       v_channels, v_in_h, v_in_w, v_kh, v_kw, v_out_h, v_out_w;
+    .reg .u32       in_spatial, out_spatial;
+
+    // Load parameters
+    ld.param.u64    addr_input, [d_input];
+    ld.param.u64    addr_output, [d_output];
+    ld.param.u64    addr_weight, [d_weight];
+    ld.param.u32    v_channels, [channels];
+    ld.param.u32    v_in_h, [in_h];
+    ld.param.u32    v_in_w, [in_w];
+    ld.param.u32    v_kh, [kh];
+    ld.param.u32    v_kw, [kw];
+    ld.param.u32    v_out_h, [out_h];
+    ld.param.u32    v_out_w, [out_w];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_POOLING;
+
+    // Decompose: idx -> (ki, kj, c, oy, ox)
+    mov.u32         tmp, idx;
+    rem.u32         ki, tmp, v_kw;
+    div.u32         tmp, tmp, v_kw;
+    rem.u32         kj, tmp, v_kh;
+    div.u32         tmp, tmp, v_kh;
+    rem.u32         c, tmp, v_channels;
+    div.u32         tmp, tmp, v_channels;
+    rem.u32         oy, tmp, v_out_h;
+    div.u32         tmp, tmp, v_out_h;
+    rem.u32         ox, tmp, v_out_w;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_input, addr_input;
+    cvta.to.global.u64  ptr_output, addr_output;
+    cvta.to.global.u64  ptr_weight, addr_weight;
+
+    // input[c][oy*kh + kj][ox*kw + ki]
+    mul.lo.u32      in_spatial, v_in_h, v_in_w;
+    mul.lo.u32      input_idx, c, in_spatial;
+    mul.lo.u32      input_row, oy, v_kh;
+    add.u32         input_row, input_row, kj;
+    mad.lo.u32      input_idx, input_row, v_in_w, input_idx;
+    mul.lo.u32      input_col, ox, v_kw;
+    add.u32         input_col, input_col, ki;
+    add.u32         input_idx, input_idx, input_col;
+    mul.wide.u32    byte_offset, input_idx, 4;
+    add.u64         ptr_input, ptr_input, byte_offset;
+    ld.global.f32   val_input, [ptr_input];
+
+    // weight[kj][ki]
+    mad.lo.u32      weight_idx, kj, v_kw, ki;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_weight, ptr_weight, byte_offset;
+    ld.global.f32   val_weight, [ptr_weight];
+
+    // Compute product
+    mul.f32         val_product, val_input, val_weight;
+
+    // Atomic add to output[c][oy][ox]
+    mul.lo.u32      out_spatial, v_out_h, v_out_w;
+    mul.lo.u32      output_idx, c, out_spatial;
+    mad.lo.u32      output_idx, oy, v_out_w, output_idx;
+    add.u32         output_idx, output_idx, ox;
+    mul.wide.u32    byte_offset, output_idx, 4;
+    add.u64         ptr_output, ptr_output, byte_offset;
+    atom.global.add.f32 val_product, [ptr_output], val_product;
+
+$EXIT_POOLING:
+    ret;
+}
+
+
+// ============================================================================
+// fc_forward: Fully Connected Layer Forward Pass
+// ============================================================================
+// input[in_size] * weight[out_size][in_size] -> output[out_size]
+// ============================================================================
+
+.visible .entry fc_forward(
+    .param .u64 d_input,
+    .param .u64 d_output,
+    .param .u64 d_weight,
+    .param .u32 in_size,
+    .param .u32 out_size,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_input, val_weight, val_product;
+    .reg .u64       addr_input, addr_output, addr_weight;
+    .reg .u64       ptr_input, ptr_output, ptr_weight;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       out_idx, in_idx;
+    .reg .u32       v_in_size, v_out_size;
+    .reg .u32       weight_idx;
+
+    // Load parameters
+    ld.param.u64    addr_input, [d_input];
+    ld.param.u64    addr_output, [d_output];
+    ld.param.u64    addr_weight, [d_weight];
+    ld.param.u32    v_in_size, [in_size];
+    ld.param.u32    v_out_size, [out_size];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check (n = out_size * in_size)
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_FC_FORWARD;
+
+    // Decompose: out_idx = idx % out_size, in_idx = idx / out_size
+    rem.u32         out_idx, idx, v_out_size;
+    div.u32         in_idx, idx, v_out_size;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_input, addr_input;
+    cvta.to.global.u64  ptr_output, addr_output;
+    cvta.to.global.u64  ptr_weight, addr_weight;
+
+    // Load input[in_idx]
+    mul.wide.u32    byte_offset, in_idx, 4;
+    add.u64         ptr_input, ptr_input, byte_offset;
+    ld.global.f32   val_input, [ptr_input];
+
+    // Load weight[out_idx][in_idx]
+    // weight_idx = out_idx * in_size + in_idx
+    mad.lo.u32      weight_idx, out_idx, v_in_size, in_idx;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_weight, ptr_weight, byte_offset;
+    ld.global.f32   val_weight, [ptr_weight];
+
+    // Compute product
+    mul.f32         val_product, val_input, val_weight;
+
+    // Atomic add to output[out_idx]
+    mul.wide.u32    byte_offset, out_idx, 4;
+    add.u64         ptr_output, ptr_output, byte_offset;
+    atom.global.add.f32 val_product, [ptr_output], val_product;
+
+$EXIT_FC_FORWARD:
+    ret;
+}
+
+
+// ============================================================================
+// apply_grad: Apply gradient update to parameters
+// ============================================================================
+// output[i] += learning_rate * grad[i]
+// ============================================================================
+
+.visible .entry apply_grad(
+    .param .u64 d_output,
+    .param .u64 d_grad,
+    .param .f32 learning_rate,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_output, val_grad, val_update, dt;
+    .reg .u64       addr_output, addr_grad;
+    .reg .u64       ptr_output, ptr_grad;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+
+    // Load parameters
+    ld.param.u64    addr_output, [d_output];
+    ld.param.u64    addr_grad, [d_grad];
+    ld.param.f32    dt, [learning_rate];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_APPLY_GRAD;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_output, addr_output;
+    cvta.to.global.u64  ptr_grad, addr_grad;
+
+    // Load values
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_output, ptr_output, byte_offset;
+    ld.global.f32   val_output, [ptr_output];
+    add.u64         ptr_grad, ptr_grad, byte_offset;
+    ld.global.f32   val_grad, [ptr_grad];
+
+    // Compute update: output += dt * grad
+    fma.rn.f32      val_update, dt, val_grad, val_output;
+    st.global.f32   [ptr_output], val_update;
+
+$EXIT_APPLY_GRAD:
+    ret;
+}
+
+
+// ============================================================================
+// memset_zero: Zero out a buffer
+// ============================================================================
+
+.visible .entry memset_zero(
+    .param .u64 d_data,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       zero;
+    .reg .u64       addr_data, ptr_data;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+
+    // Load parameters
+    ld.param.u64    addr_data, [d_data];
+    ld.param.u32    total_size, [n];
+
+    // Compute global thread index
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    // Bounds check
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_MEMSET;
+
+    // Convert to global address
+    cvta.to.global.u64  ptr_data, addr_data;
+    mul.wide.u32    byte_offset, idx, 4;
+    add.u64         ptr_data, ptr_data, byte_offset;
+
+    // Store zero
+    mov.f32         zero, 0.0;
+    st.global.f32   [ptr_data], zero;
+
+$EXIT_MEMSET:
+    ret;
+}
