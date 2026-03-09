@@ -41,3 +41,9 @@ class Layer {
 void init_activation_ptx(const char* ptx_path);
 void cleanup_activation_ptx();
 void launch_sigmoid_ptx(float* d_input, float* d_output, int n, int block_size = 256);
+
+// PTX-based loss functions (loaded from losses.ptx)
+void init_loss_ptx(const char* ptx_path);
+void cleanup_loss_ptx();
+void launch_make_error_ptx(float* d_error, float* d_output, unsigned int label, int n, int block_size = 256);
+void launch_mse_gradient_ptx(float* d_predicted, float* d_target, float* d_gradient, int n, int block_size = 256);

@@ -5,6 +5,11 @@
 static CUmodule activation_module = nullptr;
 static CUfunction sigmoid_kernel = nullptr;
 
+// PTX module and kernel handles for loss functions
+static CUmodule loss_module = nullptr;
+static CUfunction make_error_onehot_kernel = nullptr;
+static CUfunction mse_gradient_kernel = nullptr;
+
 // Error check macro for CUDA Driver API
 #define PTX_CHECK(call)                                                 \
     do {                                                                \
@@ -103,13 +108,33 @@ void init_activation_ptx(const char* ptx_path)
     PTX_CHECK(cuModuleGetFunction(&sigmoid_kernel, activation_module, "sigmoid"));
 }
 
-// Cleanup PTX module - call at end of program
+// Initialize PTX loss kernels - call once before using
+void init_loss_ptx(const char* ptx_path)
+{
+    if (loss_module != nullptr) return; // Already initialized
+    
+    PTX_CHECK(cuModuleLoad(&loss_module, ptx_path));
+    PTX_CHECK(cuModuleGetFunction(&make_error_onehot_kernel, loss_module, "make_error_onehot"));
+    PTX_CHECK(cuModuleGetFunction(&mse_gradient_kernel, loss_module, "mse_gradient"));
+}
+
+// Cleanup PTX modules - call at end of program
 void cleanup_activation_ptx()
 {
     if (activation_module != nullptr) {
         cuModuleUnload(activation_module);
         activation_module = nullptr;
         sigmoid_kernel = nullptr;
+    }
+}
+
+void cleanup_loss_ptx()
+{
+    if (loss_module != nullptr) {
+        cuModuleUnload(loss_module);
+        loss_module = nullptr;
+        make_error_onehot_kernel = nullptr;
+        mse_gradient_kernel = nullptr;
     }
 }
 
@@ -132,6 +157,64 @@ void launch_sigmoid_ptx(float* d_input, float* d_output, int n, int block_size)
     
     PTX_CHECK(cuLaunchKernel(
         sigmoid_kernel,
+        grid_size, 1, 1,    // grid dims
+        block_size, 1, 1,   // block dims
+        0,                  // shared memory
+        0,                  // stream
+        args,
+        nullptr
+    ));
+}
+
+// Launch make_error_onehot kernel from PTX: error[i] = (label == i ? 1.0 : 0.0) - output[i]
+void launch_make_error_ptx(float* d_error, float* d_output, unsigned int label, int n, int block_size)
+{
+    if (make_error_onehot_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX loss not initialized. Call init_loss_ptx() first.\n");
+        return;
+    }
+    
+    int grid_size = (n + block_size - 1) / block_size;
+    unsigned int n_u32 = static_cast<unsigned int>(n);
+    
+    void* args[] = {
+        &d_error,
+        &d_output,
+        &label,
+        &n_u32
+    };
+    
+    PTX_CHECK(cuLaunchKernel(
+        make_error_onehot_kernel,
+        grid_size, 1, 1,    // grid dims
+        block_size, 1, 1,   // block dims
+        0,                  // shared memory
+        0,                  // stream
+        args,
+        nullptr
+    ));
+}
+
+// Launch MSE gradient kernel from PTX: gradient[i] = (2/n) * (predicted[i] - target[i])
+void launch_mse_gradient_ptx(float* d_predicted, float* d_target, float* d_gradient, int n, int block_size)
+{
+    if (mse_gradient_kernel == nullptr) {
+        fprintf(stderr, "Error: PTX loss not initialized. Call init_loss_ptx() first.\n");
+        return;
+    }
+    
+    int grid_size = (n + block_size - 1) / block_size;
+    unsigned int n_u32 = static_cast<unsigned int>(n);
+    
+    void* args[] = {
+        &d_predicted,
+        &d_target,
+        &d_gradient,
+        &n_u32
+    };
+    
+    PTX_CHECK(cuLaunchKernel(
+        mse_gradient_kernel,
         grid_size, 1, 1,    // grid dims
         block_size, 1, 1,   // block dims
         0,                  // shared memory
