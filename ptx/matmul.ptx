@@ -90,3 +90,87 @@ loop_end:
 
  ret;
 }
+
+
+// matrix A is M x K, matrix B is K x N, output matrix C is M x N
+
+.visible .entry ptx_matmul(
+          .param .u64 c_addr,
+          .param .u64 a_addr,
+          .param .u64 b_addr,
+          .param .u32 M,
+          .param .u32 N,
+          .param .u32 K)
+{
+    .reg .pred p;
+    .reg .u64 c_ptr, a_ptr, b_ptr, addr_a, addr_b, addr_c;
+    .reg .u32 M_val, N_val, K_val;
+    .reg .u32 idx, y, x, k;
+    .reg .u32 a_idx, b_idx;
+    .reg .f32 a_r, a_i, b_r, b_i, s_f_r, s_f_i;
+    .reg .f32 temp1, temp2;
+    .reg .u32 total_size;
+    .reg .u32 ctaid, ntid, tid;
+    
+    ld.param.u64        c_ptr, [c_addr];  // global address of c
+    ld.param.u64        a_ptr, [a_addr]; 
+    ld.param.u64        b_ptr, [b_addr]; 
+    ld.param.u32        M_val, [M]; 
+    ld.param.u32        N_val, [N]; 
+    ld.param.u32        K_val, [K]; 
+    
+    mov.u32             ctaid, %ctaid.x; 
+    mov.u32             ntid, %ntid.x; 
+    mov.u32             tid, %tid.x;
+    mad.lo.u32          idx, ctaid, ntid, tid;
+    
+    mul.lo.u32          total_size, M_val, N_val;
+    setp.ge.u32         p, idx, total_size;
+    @p ret;
+
+
+
+
+
+    ret;
+
+}
+
+
+.visible .entry ptx_matmul(
+          .param .u64 c_addr,
+          .param .u64 a_addr,
+          .param .u64 b_addr,
+          .param .u32 M,
+          .param .u32 N,
+          .param .u32 K)
+{
+    .reg .pred p;
+    .reg .u64 c_ptr, a_ptr, b_ptr;
+    .reg .u32 M_val, N_val, K_val;
+    .reg .u32 idx, idy;
+    .reg .u32 total_size;
+    .reg .u32 ctaid, ntid, tid;
+    
+    ld.param.u64        c_ptr, [c_addr];  // address of matrix C on global memory
+    ld.param.u64        a_ptr, [a_addr];  // address of matrix A on global memory
+    ld.param.u64        b_ptr, [b_addr];  // address of matrix B on global memory
+    ld.param.u32        M_val, [M]; 
+    ld.param.u32        N_val, [N]; 
+    ld.param.u32        K_val, [K]; 
+    
+    mov.u32             ctaid, %ctaid.x; 
+    mov.u32             ntid, %ntid.x; 
+    mov.u32             tid, %tid.x;
+    mad.lo.u32          idx, ctaid, ntid, tid;
+    mov.u32             ctaid, %ctaid.y;       // using same registers for y-dimension as don't need there previous values
+    mov.u32             ntid, %ntid.y; 
+    mov.u32             tid, %tid.y;
+    mad.lo.u32          idy, ctaid, ntid, tid;
+    
+    mul.lo.u32          total_size, M_val, N_val;
+    setp.ge.u32         p, idx, total_size;
+    @p ret;
+  // our matmul implementation
+    ret;
+}
