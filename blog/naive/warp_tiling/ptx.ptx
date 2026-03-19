@@ -1,0 +1,232 @@
+.version 8.0
+.target sm_70
+.address_size 64
+.extern .shared .align 4 .b8 smem[];
+
+.visible .entry warp_tiled_ptx(
+          .param .u64 c_addr,
+          .param .u64 a_addr,
+          .param .u64 b_addr,
+          .param .u32 M,
+          .param .u32 N,
+          .param .u32 K,
+          .param .u32 BT_M,
+          .param .u32 BT_N,
+          .param .u32 BT_K,
+          .param .u32 WT_X,
+          .param .u32 WT_Y)
+{
+    .reg .pred p;
+    .reg .u64 c_ptr, a_ptr, b_ptr;
+    .reg .u32 M_val, N_val, K_val;
+    .reg .u64 sh_A, sh_B;
+    .reg .u64 offset64;
+    .reg .u32 BT_M_val, BT_N_val, BT_K_val;
+    .reg .u32 WT_X_val, WT_Y_val;
+    .reg .u32 block_row, block_col;
+    .reg .u32 block_m_base, block_n_base;
+    .reg .u32 warp_id, lane_id;
+    .reg .u32 warp_tiles_per_row, warp_row, warp_col;
+    .reg .u32 a_row_base, b_col_base, b_stride_bytes;
+    .reg .u32 row, col;
+    .reg .u32 i, k, temp, offset;
+    .reg .f32 sum, a_val, b_val;
+    .reg .u32 inner_row_C, inner_col_C;
+    .reg .u32 inner_row_A, inner_col_A;
+    .reg .u32 inner_row_B, inner_col_B;
+    .reg .u32 sh_A_size;
+    .reg .u64 addr_a, addr_b, addr_c;
+    .reg .u64 addr_sh_A, addr_sh_B;
+    .reg .u64 b_stride64;
+    .reg .u32 tidx;
+    
+    ld.param.u64        c_ptr, [c_addr];  // address of matrix C on global memory
+    ld.param.u64        a_ptr, [a_addr];  // address of matrix A on global memory
+    ld.param.u64        b_ptr, [b_addr];  // address of matrix B on global memory
+    ld.param.u32        M_val, [M]; 
+    ld.param.u32        N_val, [N]; 
+    ld.param.u32        K_val, [K]; 
+    ld.param.u32        BT_M_val, [BT_M];
+    ld.param.u32        BT_N_val, [BT_N];
+    ld.param.u32        BT_K_val, [BT_K];
+    ld.param.u32        WT_X_val, [WT_X];
+    ld.param.u32        WT_Y_val, [WT_Y];
+    
+
+    //     const uint block_row = blockIdx.y;
+    //     const uint block_col = blockIdx.x;
+
+    //     const uint inner_row = threadId.x / TILE_WIDTH;
+    //     const uint inner_col = threadId.x % TILE_WIDTH;
+    mov.u32             block_row, %ctaid.y;
+    mov.u32             block_col, %ctaid.x;
+    mov.u32             tidx, %tid.x;
+    mul.lo.u32          block_m_base, block_row, BT_M_val;
+    mul.lo.u32          block_n_base, block_col, BT_N_val;
+
+    // const uint warp_id = thread_id / 32;
+    // const uint lane_id = thread_id % 32;
+    shr.u32             warp_id, tidx, 5;
+    and.b32             lane_id, tidx, 31;
+
+    // const uint warp_tiles_per_row = BT_N / WT_X;
+    // const uint warp_row = warp_id / warp_tiles_per_row;
+    // const uint warp_col = warp_id % warp_tiles_per_row;
+    div.u32             warp_tiles_per_row, BT_N_val, WT_X_val;
+    div.u32             warp_row, warp_id, warp_tiles_per_row;
+    rem.u32             warp_col, warp_id, warp_tiles_per_row;
+
+    // dividing and modulo to get inner row and column indices within the tile
+    // by no of columns in the respective tile
+    // const uint inner_row = warp_row * WT_Y + lane_id / WT_X;
+    // const uint inner_col = warp_col * WT_X + lane_id % WT_X;
+    div.u32             inner_row_C, lane_id, WT_X_val; // this is for matrix C
+    mul.lo.u32          temp, warp_row, WT_Y_val;
+    add.u32             inner_row_C, temp, inner_row_C;
+
+    rem.u32             inner_col_C, lane_id, WT_X_val; // this is for matrix C
+    mul.lo.u32          temp, warp_col, WT_X_val;
+    add.u32             inner_col_C, temp, inner_col_C;
+
+    mul.lo.u32          a_row_base, inner_row_C, BT_K_val;
+    shl.b32             a_row_base, a_row_base, 2;
+    shl.b32             b_col_base, inner_col_C, 2;
+    shl.b32             b_stride_bytes, BT_N_val, 2;
+    cvt.u64.u32         b_stride64, b_stride_bytes;
+
+    div.u32             inner_row_A, tidx, BT_K_val; // this is for matrix A           
+    rem.u32             inner_col_A, tidx, BT_K_val; // this is for matrix A
+
+    div.u32             inner_row_B, tidx, BT_N_val; // this is for matrix B
+    rem.u32             inner_col_B, tidx, BT_N_val; // this is for matrix B
+
+    //     int row = block_row * TILE_WIDTH + inner_row;
+    //     int col = block_col * TILE_WIDTH + inner_col;
+    add.u32             row, block_m_base, inner_row_C;  //global address of C
+    add.u32             col, block_n_base, inner_col_C;  //global address of C
+    
+    //     __shared__ float sh_A[TILE_WIDTH][TILE_WIDTH];
+    //     __shared__ float sh_B[TILE_WIDTH][TILE_WIDTH];
+    mov.u64 sh_A, smem;
+
+    mul.lo.u32          sh_A_size, BT_M_val, BT_K_val;
+    shl.b32             sh_A_size, sh_A_size, 2;  //size in bytes, each float is 4 bytes    
+    cvt.u64.u32         offset64, sh_A_size;
+    add.u64             sh_B, sh_A, offset64;
+
+    mov.f32             sum, 0f00000000;
+    mov.u32             i, 0;
+    
+Tile_loop:
+    setp.ge.u32         p, i, K_val;
+    @p bra              Tile_loop_end;
+
+    // Bounds check for loading A into shared memory
+    setp.ge.u32         p, inner_row_A, BT_M_val;
+    @p bra              Do_not_load_A;
+    setp.ge.u32         p, inner_col_A, BT_K_val;
+    @p bra              Do_not_load_A;
+
+    // Load tile of A into shared memory with tile offset
+    // A[(block_row * BT_M_val + inner_row_A) * K_val + (i + inner_col_A)]
+    add.u32             temp, i, inner_col_A;
+    setp.ge.u32         p, temp, K_val;
+    @p bra              skip_load_A;
+    add.u32             offset, block_m_base, inner_row_A;
+    setp.ge.u32         p, offset, M_val;
+    @p bra              skip_load_A;
+    mul.lo.u32          offset, offset, K_val;
+    add.u32             offset, offset, i;
+    add.u32             offset, offset, inner_col_A;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_a, a_ptr, offset64;
+    ld.global.f32       a_val, [addr_a];
+    // sh_A[(inner_row_A) * BT_K_val + inner_col_A]
+    mul.lo.u32          offset, inner_row_A, BT_K_val;
+    add.u32             offset, offset, inner_col_A;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh_A, sh_A, offset64;
+    st.shared.f32       [addr_sh_A], a_val;
+skip_load_A:
+    
+Do_not_load_A:
+    
+    // Bounds check for laoding B into shared memory
+    setp.ge.u32         p, inner_row_B, BT_K_val;
+    @p bra              Do_not_load_B;
+    setp.ge.u32         p, inner_col_B, BT_N_val;
+    @p bra              Do_not_load_B;
+
+    // Load tile of B into shared memory with tile offset
+    // B[(i + inner_row_B) * N_val + (block_col * BT_N_val + inner_col_B)]
+    add.u32             temp, i, inner_row_B;
+    setp.ge.u32         p, temp, K_val;
+    @p bra              skip_load_B;
+    add.u32             offset, block_n_base, inner_col_B;
+    setp.ge.u32         p, offset, N_val;
+    @p bra              skip_load_B;
+    add.u32             temp, i, inner_row_B;
+    mul.lo.u32          offset, temp, N_val;
+    mov.u32             temp, block_n_base;
+    add.u32             offset, offset, temp;
+    add.u32             offset, offset, inner_col_B;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_b, b_ptr, offset64;
+    ld.global.f32       b_val, [addr_b];
+    // sh_B[(inner_row_B) * BT_N_val + inner_col_B]
+    mul.lo.u32          offset, inner_row_B, BT_N_val;
+    add.u32             offset, offset, inner_col_B;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh_B, sh_B, offset64;
+    st.shared.f32       [addr_sh_B], b_val;
+skip_load_B:
+
+Do_not_load_B: 
+    
+    bar.sync 0;
+    cvt.u64.u32         offset64, a_row_base;
+    add.u64             addr_sh_A, sh_A, offset64;
+    cvt.u64.u32         offset64, b_col_base;
+    add.u64             addr_sh_B, sh_B, offset64;
+    mov.u32 k, 0;
+K_loop:
+    setp.ge.u32         p, k, BT_K_val;
+    @p bra              K_loop_end;
+
+    ld.shared.f32       a_val, [addr_sh_A];
+    ld.shared.f32       b_val, [addr_sh_B];
+
+    fma.rn.f32          sum, a_val, b_val, sum;
+
+    add.u64             addr_sh_A, addr_sh_A, 4;
+    add.u64             addr_sh_B, addr_sh_B, b_stride64;
+    add.u32             k, k, 1;
+    bra                 K_loop;
+K_loop_end:
+
+    bar.sync 0;
+    add.u32             i, i, BT_K_val;
+    bra                 Tile_loop;
+Tile_loop_end:
+    // Write result back to global memory
+    // C[row * N + col] = sum;
+    mul.lo.u32          offset, row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;  // each float is 4 bytes
+
+    // sanity checks to avoid out-of-bounds global memory access
+    setp.ge.u32         p, row, M_val;
+    @p bra              skip_store_C;
+    setp.ge.u32         p, col, N_val;
+    @p bra              skip_store_C;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.f32       [addr_c], sum;
+
+skip_store_C:
+    ret;
+}

@@ -1,0 +1,99 @@
+.version 8.0
+.target sm_86
+.address_size 64
+
+.visible .entry naive_ptx(
+    .param .u64 c_addr,
+    .param .u64 a_addr,
+    .param .u64 b_addr,
+    .param .u32 M,
+    .param .u32 N,
+    .param .u32 K
+)
+.reqntid 32, 32, 1      // remember to explicitely to this,
+                        //as default block dimensions become (32*32,1,1) which is not what we want
+{
+    .reg .pred p;
+
+    .reg .u64 c_ptr, a_ptr, b_ptr;
+    .reg .u64 addr_a, addr_b, addr_c;
+    .reg .u32 M_val, N_val, K_val;
+    .reg .u32 row, col;
+    .reg .u32 block_x, block_y;
+    .reg .u32 thread_x, thread_y;
+    .reg .u32 blockDim_x, blockDim_y;
+    .reg .u32 k;
+    .reg .u32 offset;
+    .reg .f32 sum, a_val, b_val;
+    
+    ld.param.u64 c_ptr, [c_addr];
+    ld.param.u64 a_ptr, [a_addr];
+    ld.param.u64 b_ptr, [b_addr];
+    ld.param.u32 M_val, [M];
+    ld.param.u32 N_val, [N];
+    ld.param.u32 K_val, [K];
+
+    mov.u32 block_x, %ctaid.x;
+    mov.u32 block_y, %ctaid.y;
+
+    mov.u32 blockDim_x, %ntid.x;
+    mov.u32 blockDim_y, %ntid.y;
+
+    mov.u32 thread_x, %tid.x;
+    mov.u32 thread_y, %tid.y;
+
+    mad.lo.u32 col, block_x, blockDim_x, thread_x;  //remember col is x
+    mad.lo.u32 row, block_y, blockDim_y, thread_y;  //remember row is y
+
+    // bounds check
+    setp.ge.u32 p, row, M_val;
+    @p ret;
+
+    setp.ge.u32 p, col, N_val;
+    @p ret;
+
+    mov.f32 sum, 0f00000000;
+    mov.u32 k, 0;
+
+LOOP_K:
+
+    setp.ge.u32 p, k, K_val;
+    @p bra END_K;
+
+    // A[row*K + k]
+    mul.lo.u32 offset, row, K_val;
+    add.u32 offset, offset, k;
+    cvt.u64.u32 addr_a, offset;
+    shl.b64 addr_a, addr_a, 2;  // each float is 4 bytes
+    add.u64 addr_a, a_ptr, addr_a;
+
+    ld.global.f32 a_val, [addr_a];
+
+    // B[k*N + col]
+    mul.lo.u32 offset, k, N_val;
+    add.u32 offset, offset, col;
+    cvt.u64.u32 addr_b, offset;
+    shl.b64 addr_b, addr_b, 2;  // each float is 4 bytes
+    add.u64 addr_b, b_ptr, addr_b;
+
+    ld.global.f32 b_val, [addr_b];
+
+    // sum += a*b
+    fma.rn.f32 sum, a_val, b_val, sum;
+
+    add.u32 k, k, 1;
+    bra LOOP_K;
+
+END_K:
+
+    // C[row*N + col]
+    mul.lo.u32 offset, row, N_val;
+    add.u32 offset, offset, col;
+    cvt.u64.u32 addr_c, offset;
+    shl.b64 addr_c, addr_c, 2;  // each float is 4 bytes
+    add.u64 addr_c, c_ptr, addr_c;
+
+    st.global.f32 [addr_c], sum;
+
+    ret;
+}
