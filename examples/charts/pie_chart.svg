@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620">
+<defs>
+<linearGradient id="bgFade" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eef2f3"/>
+<stop offset="100%" stop-color="#dfe7ea"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="url(#bgFade)"/>
+<rect x="16" y="16" width="948" height="588" rx="22" fill="#ffffff" stroke="#d8e1e5" stroke-width="2"/>
+<text x="64" y="44" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="26" font-weight="700">Operations Dashboard</text>
+<path d="M 372.4 322.4 L 372.4 161.2 A 161.2 161.2 0 0 1 520.416 258.552 Z" fill="#385663"/>
+<path d="M 372.4 322.4 L 520.416 258.552 A 161.2 161.2 0 0 1 376.151 483.556 Z" fill="#4f6f7b"/>
+<path d="M 372.4 322.4 L 376.151 483.556 A 161.2 161.2 0 0 1 255.147 433.022 Z" fill="#6f8f9b"/>
+<path d="M 372.4 322.4 L 255.147 433.022 A 161.2 161.2 0 0 1 372.4 161.2 Z" fill="#8faab4"/>
+<circle cx="372.4" cy="322.4" r="77.376" fill="#ffffff"/>
+<rect x="646.8" y="88" width="15" height="15" rx="3" fill="#385663"/>
+<text x="670.8" y="100" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="14">Group 1 - 18.5%</text>
+<rect x="646.8" y="116.0" width="15" height="15" rx="3" fill="#4f6f7b"/>
+<text x="670.8" y="128.0" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="14">Group 2 - 31.1%</text>
+<rect x="646.8" y="144.0" width="15" height="15" rx="3" fill="#6f8f9b"/>
+<text x="670.8" y="156.0" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="14">Group 3 - 13.3%</text>
+<rect x="646.8" y="172.0" width="15" height="15" rx="3" fill="#8faab4"/>
+<text x="670.8" y="184.0" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="14">Group 4 - 37.0%</text>
+</svg>

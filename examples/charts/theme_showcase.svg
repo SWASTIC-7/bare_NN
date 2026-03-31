@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620">
+<defs>
+<linearGradient id="bgFade" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eef2f3"/>
+<stop offset="100%" stop-color="#dfe7ea"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="url(#bgFade)"/>
+<rect x="16" y="16" width="948" height="588" rx="22" fill="#ffffff" stroke="#d8e1e5" stroke-width="2"/>
+<text x="64" y="44" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="26" font-weight="700">Theme Reference Panel</text>
+<rect x="64" y="64" width="320" height="120" rx="12" fill="#f5f9fb" stroke="#d5e0e6"/>
+<polyline fill="none" stroke="#385663" stroke-width="2.5" points="70,150 120,110 170,135 220,95 270,125 320,102"/>
+<circle cx="540" cy="260" r="100" fill="none" stroke="#d8e3e8" stroke-width="20"/>
+<circle cx="540" cy="260" r="100" fill="none" stroke="#385663" stroke-width="20" stroke-dasharray="520 628" transform="rotate(-90 540 260)"/>
+<text x="540" y="272" text-anchor="middle" fill="#2f4a57" font-size="36" font-family="Segoe UI, Tahoma, sans-serif" font-weight="700">100%</text>
+<rect x="80" y="360" width="250" height="130" rx="14" fill="#ffffff" stroke="#cad6dc"/>
+<text x="100" y="395" fill="#8aa0aa" font-size="14" font-family="Segoe UI, Tahoma, sans-serif" font-weight="700">NUMBER</text>
+<text x="100" y="435" fill="#2f4a57" font-size="44" font-family="Segoe UI, Tahoma, sans-serif" font-weight="700">$120,000</text>
+<rect x="640" y="472" width="20" height="28" rx="5" fill="#385663"/>
+<rect x="670" y="458" width="20" height="42" rx="5" fill="#4f6f7b"/>
+<rect x="700" y="444" width="20" height="56" rx="5" fill="#6f8f9b"/>
+<rect x="730" y="430" width="20" height="70" rx="5" fill="#8faab4"/>
+<rect x="760" y="416" width="20" height="84" rx="5" fill="#2d3f49"/>
+<rect x="790" y="402" width="20" height="98" rx="5" fill="#6d7f87"/>
+<rect x="820" y="388" width="20" height="112" rx="5" fill="#385663"/>
+</svg>

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620">
+<defs>
+<linearGradient id="bgFade" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eef2f3"/>
+<stop offset="100%" stop-color="#dfe7ea"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="url(#bgFade)"/>
+<rect x="16" y="16" width="948" height="588" rx="22" fill="#ffffff" stroke="#d8e1e5" stroke-width="2"/>
+<text x="64" y="44" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="26" font-weight="700">Operations Dashboard</text>
+<line x1="64" y1="64" x2="916" y2="64" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="162" x2="916" y2="162" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="260" x2="916" y2="260" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="359" x2="916" y2="359" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="457" x2="916" y2="457" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="556" x2="916" y2="556" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<rect x="106.6" y="420.638" width="127.8" height="135.362" fill="#385663"/>
+<rect x="106.6" y="298.812" width="127.8" height="121.826" fill="#4f6f7b"/>
+<rect x="106.6" y="204.058" width="127.8" height="94.7536" fill="#6f8f9b"/>
+<text x="170.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">Q1</text>
+<rect x="319.6" y="366.493" width="127.8" height="189.507" fill="#385663"/>
+<rect x="319.6" y="258.203" width="127.8" height="108.29" fill="#4f6f7b"/>
+<rect x="319.6" y="129.609" width="127.8" height="128.594" fill="#6f8f9b"/>
+<text x="383.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">Q2</text>
+<rect x="532.6" y="393.565" width="127.8" height="162.435" fill="#385663"/>
+<rect x="532.6" y="244.667" width="127.8" height="148.899" fill="#4f6f7b"/>
+<rect x="532.6" y="129.609" width="127.8" height="115.058" fill="#6f8f9b"/>
+<text x="596.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">Q3</text>
+<rect x="745.6" y="352.957" width="127.8" height="203.043" fill="#385663"/>
+<rect x="745.6" y="224.362" width="127.8" height="128.594" fill="#4f6f7b"/>
+<rect x="745.6" y="89" width="127.8" height="135.362" fill="#6f8f9b"/>
+<text x="809.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">Q4</text>
+<rect x="736" y="72" width="14" height="14" rx="3" fill="#385663"/>
+<text x="758" y="84" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="13">Ops</text>
+<rect x="736" y="96" width="14" height="14" rx="3" fill="#4f6f7b"/>
+<text x="758" y="108" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="13">Sales</text>
+<rect x="736" y="120" width="14" height="14" rx="3" fill="#6f8f9b"/>
+<text x="758" y="132" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="13">R&amp;D</text>
+</svg>
