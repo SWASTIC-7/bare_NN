@@ -1,15 +1,34 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <cmath>
+#include <filesystem>
 #include <numeric>
 #include <cstdio>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "bare_nn.h"
+#include "charts_api.h"
 #include "cuda_utils.cuh"
 
 namespace {
+
+struct LinearRegressionMetrics {
+    std::vector<std::string> epoch_labels;
+    std::vector<double> mse_curve;
+    std::vector<double> abs_dw_curve;
+    double learned_w = 0.0;
+    double learned_b = 0.0;
+    double target_w = 0.0;
+    double target_b = 0.0;
+};
+
+struct MlpForwardMetrics {
+    std::vector<float> hidden_pre_relu;
+    std::vector<float> probs;
+};
 
 void init_driver_context(CUdevice* dev, CUcontext* ctx) {
     CU_CHECK(cuInit(0));
@@ -44,7 +63,7 @@ void print_vector(const char* name, const std::vector<float>& v) {
     printf("]\n");
 }
 
-void run_linear_regression_training_demo() {
+LinearRegressionMetrics run_linear_regression_training_demo() {
     constexpr int kSamples = 256;
     constexpr float kTrueW = 2.5f;
     constexpr float kTrueB = 1.2f;
@@ -84,6 +103,9 @@ void run_linear_regression_training_demo() {
     float w = -0.7f;
     float b = 0.3f;
     float last_mse = 0.0f;
+    LinearRegressionMetrics metrics;
+    metrics.target_w = kTrueW;
+    metrics.target_b = kTrueB;
 
     for (int epoch = 1; epoch <= kEpochs; ++epoch) {
         // pred = w * x + b
@@ -110,6 +132,12 @@ void run_linear_regression_training_demo() {
         float h_sq_sum = std::accumulate(h_sq.begin(), h_sq.end(), 0.0f);
         last_mse = h_sq_sum / static_cast<float>(kSamples);
 
+        if (epoch == 1 || epoch % 10 == 0 || epoch == kEpochs) {
+            metrics.epoch_labels.push_back(std::to_string(epoch));
+            metrics.mse_curve.push_back(last_mse);
+            metrics.abs_dw_curve.push_back(std::fabs(h_dw));
+        }
+
         w -= kLearningRate * h_dw;
         b -= kLearningRate * h_db;
 
@@ -121,15 +149,20 @@ void run_linear_regression_training_demo() {
     printf("[linreg] learned: w=%.6f b=%.6f\n", w, b);
     printf("[linreg] target : w=%.6f b=%.6f\n", kTrueW, kTrueB);
 
+    metrics.learned_w = w;
+    metrics.learned_b = b;
+
     cuMemFree(d_x);
     cuMemFree(d_y);
     cuMemFree(d_pred);
     cuMemFree(d_grad);
     cuMemFree(d_sq);
     cuMemFree(d_tmp_mul);
+
+    return metrics;
 }
 
-void run_mlp_forward_demo() {
+MlpForwardMetrics run_mlp_forward_demo() {
     constexpr unsigned int kInDim = 4;
     constexpr unsigned int kHiddenDim = 8;
     constexpr unsigned int kOutDim = 3;
@@ -186,6 +219,10 @@ void run_mlp_forward_demo() {
     print_vector("logits", h_logits);
     print_vector("softmax", h_probs);
 
+    MlpForwardMetrics metrics;
+    metrics.hidden_pre_relu = h_hidden;
+    metrics.probs = h_probs;
+
     cuMemFree(d_input);
     cuMemFree(d_w1);
     cuMemFree(d_hidden);
@@ -193,6 +230,67 @@ void run_mlp_forward_demo() {
     cuMemFree(d_w2);
     cuMemFree(d_logits);
     cuMemFree(d_probs);
+
+    return metrics;
+}
+
+void generate_mlp_charts(const LinearRegressionMetrics& linreg, const MlpForwardMetrics& mlp) {
+    std::filesystem::create_directories("examples/MLP/charts");
+
+    bare_nn::charts::ChartConfig cfg;
+    cfg.width = 980;
+    cfg.height = 620;
+
+    cfg.title = "Linear Regression: MSE During Training";
+    if (!bare_nn::charts::create_line_chart(
+            "examples/MLP/charts/linreg_mse_line.svg", linreg.epoch_labels, linreg.mse_curve, cfg)) {
+        printf("[charts] failed: linreg_mse_line.svg\n");
+    }
+
+    cfg.title = "Linear Regression: |dw| by Checkpoint";
+    if (!bare_nn::charts::create_bar_chart(
+            "examples/MLP/charts/linreg_grad_bar.svg", linreg.epoch_labels, linreg.abs_dw_curve, cfg)) {
+        printf("[charts] failed: linreg_grad_bar.svg\n");
+    }
+
+    std::vector<std::string> class_labels = {"Class 0", "Class 1", "Class 2"};
+    std::vector<double> probs_pct;
+    probs_pct.reserve(mlp.probs.size());
+    for (float p : mlp.probs) {
+        probs_pct.push_back(static_cast<double>(p) * 100.0);
+    }
+
+    cfg.title = "MLP Output Distribution (Softmax %)";
+    if (!bare_nn::charts::create_pie_chart(
+            "examples/MLP/charts/mlp_softmax_pie.svg", class_labels, probs_pct, cfg)) {
+        printf("[charts] failed: mlp_softmax_pie.svg\n");
+    }
+
+    std::vector<std::string> hidden_labels;
+    std::vector<double> hidden_pos;
+    std::vector<double> hidden_neg;
+    hidden_labels.reserve(mlp.hidden_pre_relu.size());
+    hidden_pos.reserve(mlp.hidden_pre_relu.size());
+    hidden_neg.reserve(mlp.hidden_pre_relu.size());
+    for (size_t i = 0; i < mlp.hidden_pre_relu.size(); ++i) {
+        hidden_labels.push_back("H" + std::to_string(i));
+        double v = static_cast<double>(mlp.hidden_pre_relu[i]);
+        hidden_pos.push_back(v > 0.0 ? v : 0.0);
+        hidden_neg.push_back(v < 0.0 ? -v : 0.0);
+    }
+
+    cfg.title = "Hidden Pre-ReLU Magnitude Split";
+    if (!bare_nn::charts::create_stacked_bar_chart(
+            "examples/MLP/charts/mlp_hidden_stacked.svg",
+            hidden_labels,
+            {"positive", "negative(abs)"},
+            {hidden_pos, hidden_neg},
+            cfg)) {
+        printf("[charts] failed: mlp_hidden_stacked.svg\n");
+    }
+
+
+    printf("[charts] wrote SVGs to examples/MLP/charts/\n");
 }
 
 }  // namespace
@@ -202,11 +300,14 @@ int main() {
     CUcontext ctx;
     init_driver_context(&dev, &ctx);
 
-    printf("=== Linear Regression Training (GPU) ===\n");
-    run_linear_regression_training_demo();
+    printf("Training Linear Regression....\n");
+    LinearRegressionMetrics linreg_metrics = run_linear_regression_training_demo();
 
-    printf("\n=== MLP Forward Demo (PTX wrappers) ===\n");
-    run_mlp_forward_demo();
+    printf("\nInference\n");
+    MlpForwardMetrics mlp_metrics = run_mlp_forward_demo();
+
+    printf("\nCreating charts...\n");
+    generate_mlp_charts(linreg_metrics, mlp_metrics);
 
     release_driver_context(dev);
     return 0;

@@ -40,7 +40,7 @@ The MLP operations are dispatched through PTX-backed wrapper functions from the 
 Run from repository root:
 
 ```bash
-nvcc -std=c++17 -Iinclude -o build/mlp_example examples/MLP/main.cu src/activation_fn.cu src/forward_pass.cu src/losses.cu src/backward_pass.cu -lcuda -lcudart
+nvcc -std=c++17 -Iinclude -o build/mlp_example examples/MLP/main.cu src/activation_fn.cu src/forward_pass.cu src/losses.cu src/backward_pass.cu src/charts/charts_api.cpp -lcuda -lcudart
 ```
 
 ## Run
@@ -75,6 +75,9 @@ hidden_pre_relu: [ ... ]
 hidden_post_relu: [ ... ]
 logits: [ ... ]
 softmax: [ ... ]
+
+=== Chart Export ===
+[charts] wrote SVGs to examples/MLP/charts/
 ```
 
 The MLP section includes:
@@ -86,6 +89,16 @@ The MLP section includes:
 - softmax
 
 The softmax values should be non-negative and sum close to 1.
+
+## Generated MLP Charts
+
+After run, the program writes these SVG charts:
+
+- `examples/MLP/charts/linreg_mse_line.svg` (line chart for training loss)
+- `examples/MLP/charts/linreg_grad_bar.svg` (bar chart for `|dw|` checkpoints)
+- `examples/MLP/charts/mlp_softmax_pie.svg` (pie chart of class probabilities)
+- `examples/MLP/charts/mlp_hidden_stacked.svg` (stacked bar chart for hidden pre-ReLU positive/negative magnitudes)
+- `examples/MLP/charts/theme_showcase.svg` (reference dashboard panel in same theme)
 
 ## Notes
 

@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620">
+<defs>
+<linearGradient id="bgFade" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eef2f3"/>
+<stop offset="100%" stop-color="#dfe7ea"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="url(#bgFade)"/>
+<rect x="16" y="16" width="948" height="588" rx="22" fill="#ffffff" stroke="#d8e1e5" stroke-width="2"/>
+<text x="64" y="44" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="26" font-weight="700">Linear Regression: MSE During Training</text>
+<line x1="64" y1="64" x2="916" y2="64" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="146" x2="916" y2="146" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="228" x2="916" y2="228" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="310" x2="916" y2="310" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="392" x2="916" y2="392" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="474" x2="916" y2="474" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="556" x2="916" y2="556" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<polyline fill="none" stroke="#385663" stroke-width="4" points="64,86 85.3,541.974 106.6,555.602 127.9,555.986 149.2,555.999 170.5,556 191.8,556 213.1,556 234.4,556 255.7,556 277,556 298.3,556 319.6,556 340.9,556 362.2,556 383.5,556 404.8,556 426.1,556 447.4,556 468.7,556 490,556 511.3,556 532.6,556 553.9,556 575.2,556 596.5,556 617.8,556 639.1,556 660.4,556 681.7,556 703,556 724.3,556 745.6,556 766.9,556 788.2,556 809.5,556 830.8,556 852.1,556 873.4,556 894.7,556 916,556 "/>
+<circle cx="64" cy="86" r="5" fill="#4f6f7b"/>
+<text x="64" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">1</text>
+<circle cx="85.3" cy="541.974" r="5" fill="#4f6f7b"/>
+<text x="85.3" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">10</text>
+<circle cx="106.6" cy="555.602" r="5" fill="#4f6f7b"/>
+<text x="106.6" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">20</text>
+<circle cx="127.9" cy="555.986" r="5" fill="#4f6f7b"/>
+<text x="127.9" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">30</text>
+<circle cx="149.2" cy="555.999" r="5" fill="#4f6f7b"/>
+<text x="149.2" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">40</text>
+<circle cx="170.5" cy="556" r="5" fill="#4f6f7b"/>
+<text x="170.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">50</text>
+<circle cx="191.8" cy="556" r="5" fill="#4f6f7b"/>
+<text x="191.8" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">60</text>
+<circle cx="213.1" cy="556" r="5" fill="#4f6f7b"/>
+<text x="213.1" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">70</text>
+<circle cx="234.4" cy="556" r="5" fill="#4f6f7b"/>
+<text x="234.4" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">80</text>
+<circle cx="255.7" cy="556" r="5" fill="#4f6f7b"/>
+<text x="255.7" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">90</text>
+<circle cx="277" cy="556" r="5" fill="#4f6f7b"/>
+<text x="277" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">100</text>
+<circle cx="298.3" cy="556" r="5" fill="#4f6f7b"/>
+<text x="298.3" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">110</text>
+<circle cx="319.6" cy="556" r="5" fill="#4f6f7b"/>
+<text x="319.6" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">120</text>
+<circle cx="340.9" cy="556" r="5" fill="#4f6f7b"/>
+<text x="340.9" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">130</text>
+<circle cx="362.2" cy="556" r="5" fill="#4f6f7b"/>
+<text x="362.2" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">140</text>
+<circle cx="383.5" cy="556" r="5" fill="#4f6f7b"/>
+<text x="383.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">150</text>
+<circle cx="404.8" cy="556" r="5" fill="#4f6f7b"/>
+<text x="404.8" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">160</text>
+<circle cx="426.1" cy="556" r="5" fill="#4f6f7b"/>
+<text x="426.1" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">170</text>
+<circle cx="447.4" cy="556" r="5" fill="#4f6f7b"/>
+<text x="447.4" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">180</text>
+<circle cx="468.7" cy="556" r="5" fill="#4f6f7b"/>
+<text x="468.7" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">190</text>
+<circle cx="490" cy="556" r="5" fill="#4f6f7b"/>
+<text x="490" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">200</text>
+<circle cx="511.3" cy="556" r="5" fill="#4f6f7b"/>
+<text x="511.3" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">210</text>
+<circle cx="532.6" cy="556" r="5" fill="#4f6f7b"/>
+<text x="532.6" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">220</text>
+<circle cx="553.9" cy="556" r="5" fill="#4f6f7b"/>
+<text x="553.9" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">230</text>
+<circle cx="575.2" cy="556" r="5" fill="#4f6f7b"/>
+<text x="575.2" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">240</text>
+<circle cx="596.5" cy="556" r="5" fill="#4f6f7b"/>
+<text x="596.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">250</text>
+<circle cx="617.8" cy="556" r="5" fill="#4f6f7b"/>
+<text x="617.8" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">260</text>
+<circle cx="639.1" cy="556" r="5" fill="#4f6f7b"/>
+<text x="639.1" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">270</text>
+<circle cx="660.4" cy="556" r="5" fill="#4f6f7b"/>
+<text x="660.4" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">280</text>
+<circle cx="681.7" cy="556" r="5" fill="#4f6f7b"/>
+<text x="681.7" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">290</text>
+<circle cx="703" cy="556" r="5" fill="#4f6f7b"/>
+<text x="703" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">300</text>
+<circle cx="724.3" cy="556" r="5" fill="#4f6f7b"/>
+<text x="724.3" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">310</text>
+<circle cx="745.6" cy="556" r="5" fill="#4f6f7b"/>
+<text x="745.6" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">320</text>
+<circle cx="766.9" cy="556" r="5" fill="#4f6f7b"/>
+<text x="766.9" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">330</text>
+<circle cx="788.2" cy="556" r="5" fill="#4f6f7b"/>
+<text x="788.2" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">340</text>
+<circle cx="809.5" cy="556" r="5" fill="#4f6f7b"/>
+<text x="809.5" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">350</text>
+<circle cx="830.8" cy="556" r="5" fill="#4f6f7b"/>
+<text x="830.8" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">360</text>
+<circle cx="852.1" cy="556" r="5" fill="#4f6f7b"/>
+<text x="852.1" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">370</text>
+<circle cx="873.4" cy="556" r="5" fill="#4f6f7b"/>
+<text x="873.4" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">380</text>
+<circle cx="894.7" cy="556" r="5" fill="#4f6f7b"/>
+<text x="894.7" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">390</text>
+<circle cx="916" cy="556" r="5" fill="#4f6f7b"/>
+<text x="916" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">400</text>
+</svg>
