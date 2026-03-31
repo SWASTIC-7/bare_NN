@@ -86,6 +86,29 @@ void draw_vertical_grid(std::ostringstream& ss, const ChartConfig& cfg, int x0, 
     }
 }
 
+void draw_y_ticks(
+    std::ostringstream& ss,
+    const ChartConfig& cfg,
+    int x0,
+    int y0,
+    int h,
+    double min_v,
+    double max_v,
+    int ticks) {
+    const double span = std::max(1e-12, max_v - min_v);
+    for (int i = 0; i <= ticks; ++i) {
+        const double t = static_cast<double>(i) / std::max(1, ticks);
+        const double v = max_v - t * span;
+        const int y = y0 + static_cast<int>(t * h);
+        std::ostringstream label;
+        label << std::fixed << std::setprecision((std::fabs(v) < 1.0) ? 3 : 1) << v;
+        ss << "<text x=\"" << (x0 - 10) << "\" y=\"" << (y + 4)
+           << "\" fill=\"" << cfg.theme.muted
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"11\" text-anchor=\"end\">"
+           << label.str() << "</text>\n";
+    }
+}
+
 }  // namespace
 
 bool create_bar_chart(
@@ -106,10 +129,11 @@ bool create_bar_chart(
     const int h = config.height - config.padding * 2;
     draw_grid(ss, config, x0, y0, w, h, 5);
 
-    const double max_v = std::max(1.0, *std::max_element(values.begin(), values.end()));
+    const double max_v = std::max(1e-12, *std::max_element(values.begin(), values.end()));
     const int n = static_cast<int>(values.size());
     const double slot = static_cast<double>(w) / n;
     const double bar_w = slot * 0.62;
+    draw_y_ticks(ss, config, x0, y0, h, 0.0, max_v, 5);
 
     for (int i = 0; i < n; ++i) {
         const double ratio = values[static_cast<size_t>(i)] / max_v;
@@ -225,15 +249,20 @@ bool create_line_chart(
     }
     ss << "\"/>\n";
 
+    draw_y_ticks(ss, config, x0, y0, h, min_v, max_v, 6);
+    const int x_stride = std::max(1, n / 12);
+
     for (int i = 0; i < n; ++i) {
         const double t = static_cast<double>(i) / std::max(1, n - 1);
         const double x = x0 + t * w;
         const double y = y0 + h - ((values[static_cast<size_t>(i)] - min_v) / span) * (h - 22);
         ss << "<circle cx=\"" << x << "\" cy=\"" << y << "\" r=\"5\" fill=\"" << config.theme.palette[1] << "\"/>\n";
-        ss << "<text x=\"" << x << "\" y=\"" << (y0 + h + 22)
-           << "\" fill=\"" << config.theme.ink
-           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
-           << esc(x_labels[static_cast<size_t>(i)]) << "</text>\n";
+        if (i % x_stride == 0 || i == n - 1) {
+            ss << "<text x=\"" << x << "\" y=\"" << (y0 + h + 22)
+               << "\" fill=\"" << config.theme.ink
+               << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
+               << esc(x_labels[static_cast<size_t>(i)]) << "</text>\n";
+        }
     }
 
     end_svg(ss);
@@ -326,8 +355,15 @@ bool create_multi_line_chart(
     }
     const double span = std::max(1e-9, max_v - min_v);
 
+    const std::vector<std::string> line_colors = {
+        color_at(config.theme.palette, 0),
+        color_at(config.theme.palette, 4),
+        color_at(config.theme.palette, 2),
+        color_at(config.theme.palette, 5)
+    };
+
     for (size_t j = 0; j < series.size(); ++j) {
-        ss << "<polyline fill=\"none\" stroke=\"" << color_at(config.theme.palette, static_cast<int>(j))
+        ss << "<polyline fill=\"none\" stroke=\"" << line_colors[j % line_colors.size()]
            << "\" stroke-width=\"2.6\" points=\"";
         for (size_t i = 0; i < x_labels.size(); ++i) {
             const double t = static_cast<double>(i) / std::max<size_t>(1, x_labels.size() - 1);
@@ -338,20 +374,24 @@ bool create_multi_line_chart(
         ss << "\"/>\n";
     }
 
+    draw_y_ticks(ss, config, x0, y0, h, min_v, max_v, 5);
+    const size_t x_stride_multi = std::max<size_t>(1, x_labels.size() / 12);
     for (size_t i = 0; i < x_labels.size(); ++i) {
         const double t = static_cast<double>(i) / std::max<size_t>(1, x_labels.size() - 1);
         const double x = x0 + t * w;
-        ss << "<text x=\"" << x << "\" y=\"" << (y0 + h + 22)
-           << "\" fill=\"" << config.theme.ink
-           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
-           << esc(x_labels[i]) << "</text>\n";
+        if (i % x_stride_multi == 0 || i + 1 == x_labels.size()) {
+            ss << "<text x=\"" << x << "\" y=\"" << (y0 + h + 22)
+               << "\" fill=\"" << config.theme.ink
+               << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
+               << esc(x_labels[i]) << "</text>\n";
+        }
     }
 
     const int lx = x0 + 8;
     int ly = y0 + 10;
     for (size_t j = 0; j < series_names.size(); ++j) {
         ss << "<rect x=\"" << lx << "\" y=\"" << ly << "\" width=\"14\" height=\"14\" rx=\"3\" fill=\""
-           << color_at(config.theme.palette, static_cast<int>(j)) << "\"/>\n";
+           << line_colors[j % line_colors.size()] << "\"/>\n";
         ss << "<text x=\"" << (lx + 20) << "\" y=\"" << (ly + 12)
            << "\" fill=\"" << config.theme.ink
            << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\">"
@@ -368,6 +408,8 @@ bool create_grouped_bar_chart(
     const std::vector<std::string>& labels,
     const std::vector<double>& series_a,
     const std::vector<double>& series_b,
+    const std::string& series_a_name,
+    const std::string& series_b_name,
     const ChartConfig& config) {
     if (labels.empty() || labels.size() != series_a.size() || labels.size() != series_b.size()) {
         return false;
@@ -382,10 +424,12 @@ bool create_grouped_bar_chart(
     const int h = config.height - config.padding * 2;
     draw_grid(ss, config, x0, y0, w, h, 4);
 
-    double max_v = 1.0;
+    double max_v = 0.0;
     for (size_t i = 0; i < labels.size(); ++i) {
         max_v = std::max(max_v, std::max(series_a[i], series_b[i]));
     }
+    max_v = std::max(1e-12, max_v);
+    draw_y_ticks(ss, config, x0, y0, h, 0.0, max_v, 4);
 
     const double group_w = static_cast<double>(w) / labels.size();
     const double bar_w = group_w * 0.22;
@@ -403,6 +447,19 @@ bool create_grouped_bar_chart(
            << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
            << esc(labels[i]) << "</text>\n";
     }
+
+     const int lx = x0 + 8;
+     const int ly = y0 + 8;
+     const std::string c0 = color_at(config.theme.palette, 0);
+     const std::string c1 = color_at(config.theme.palette, 1);
+     ss << "<rect x=\"" << lx << "\" y=\"" << ly << "\" width=\"14\" height=\"14\" rx=\"3\" fill=\"" << c0 << "\"/>\n";
+     ss << "<text x=\"" << (lx + 20) << "\" y=\"" << (ly + 12)
+         << "\" fill=\"" << config.theme.ink
+         << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\">" << esc(series_a_name) << "</text>\n";
+     ss << "<rect x=\"" << (lx + 180) << "\" y=\"" << ly << "\" width=\"14\" height=\"14\" rx=\"3\" fill=\"" << c1 << "\"/>\n";
+     ss << "<text x=\"" << (lx + 200) << "\" y=\"" << (ly + 12)
+         << "\" fill=\"" << config.theme.ink
+         << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\">" << esc(series_b_name) << "</text>\n";
 
     end_svg(ss);
     return write_svg(output_svg, ss);
@@ -460,7 +517,7 @@ bool create_horizontal_ranked_bar_chart(
         return false;
     }
 
-    const double max_v = std::max(1.0, *std::max_element(values.begin(), values.end()));
+    const double max_v = std::max(1e-12, *std::max_element(values.begin(), values.end()));
 
     std::ostringstream ss;
     start_svg(ss, config);
@@ -508,7 +565,7 @@ bool create_stacked_bar_chart(
         }
     }
 
-    const double max_total = std::max(1.0, *std::max_element(totals.begin(), totals.end()));
+    const double max_total = std::max(1e-12, *std::max_element(totals.begin(), totals.end()));
 
     std::ostringstream ss;
     start_svg(ss, config);

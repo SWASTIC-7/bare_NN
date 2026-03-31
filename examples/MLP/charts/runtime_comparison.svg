@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620">
+<defs>
+<linearGradient id="bgFade" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eef2f3"/>
+<stop offset="100%" stop-color="#dfe7ea"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="url(#bgFade)"/>
+<rect x="16" y="16" width="948" height="588" rx="22" fill="#ffffff" stroke="#d8e1e5" stroke-width="2"/>
+<text x="64" y="44" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="26" font-weight="700">Training vs Inference Time (ms)</text>
+<line x1="64" y1="64" x2="916" y2="64" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="187" x2="916" y2="187" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="310" x2="916" y2="310" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="433" x2="916" y2="433" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="556" x2="916" y2="556" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<text x="54" y="68" fill="#8aa0aa" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" text-anchor="end">85.8</text>
+<text x="54" y="191" fill="#8aa0aa" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" text-anchor="end">64.3</text>
+<text x="54" y="314" fill="#8aa0aa" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" text-anchor="end">42.9</text>
+<text x="54" y="437" fill="#8aa0aa" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" text-anchor="end">21.4</text>
+<text x="54" y="560" fill="#8aa0aa" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" text-anchor="end">0.000</text>
+<rect x="166.24" y="90" width="93.72" height="466" fill="#385663"/>
+<rect x="294.04" y="279.06" width="93.72" height="276.94" fill="#4f6f7b"/>
+<text x="277" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">Training</text>
+<rect x="592.24" y="442.286" width="93.72" height="113.714" fill="#385663"/>
+<rect x="720.04" y="554.059" width="93.72" height="1.94103" fill="#4f6f7b"/>
+<text x="703" y="578" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">Inference</text>
+<rect x="72" y="72" width="14" height="14" rx="3" fill="#385663"/>
+<text x="92" y="84" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12">Wrapper API</text>
+<rect x="252" y="72" width="14" height="14" rx="3" fill="#4f6f7b"/>
+<text x="272" y="84" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12">Native Kernel</text>
+</svg>

@@ -1,9 +1,9 @@
 # MLP + Training Example
 
-This folder contains one executable with two demonstrations:
+This folder contains one executable with two implementations on the same synthetic data:
 
-1. Linear regression training on synthetic data.
-2. A 2-layer MLP forward pass using PTX-backed wrapper calls.
+1. Wrapper API path (PTX-backed wrappers).
+2. Native CUDA kernels path (`examples/MLP/native_kernels.cu`).
 
 ## What It Does
 
@@ -18,7 +18,7 @@ You should see the MSE decrease over epochs and `(w, b)` converge near `(2.5, 1.
 
 ### 2) MLP Forward Pass
 
-After training, the same program runs a 2-layer MLP forward pass:
+After training, the same program runs a 2-layer MLP forward pass for both paths:
 
 - Input vector size: 4
 - Hidden layer size: 8
@@ -33,14 +33,14 @@ Execution flow:
 3. Logits = FC(hidden activation, W2)
 4. Probabilities = Softmax(logits)
 
-The MLP operations are dispatched through PTX-backed wrapper functions from the library.
+The wrapper path uses PTX-backed wrapper functions. The native path uses direct CUDA kernels for the same workload.
 
 ## Build
 
 Run from repository root:
 
 ```bash
-nvcc -std=c++17 -Iinclude -o build/mlp_example examples/MLP/main.cu src/activation_fn.cu src/forward_pass.cu src/losses.cu src/backward_pass.cu src/charts/charts_api.cpp -lcuda -lcudart
+nvcc -std=c++17 -Iinclude -o build/mlp_example examples/MLP/main.cu examples/MLP/native_kernels.cu src/activation_fn.cu src/forward_pass.cu src/losses.cu src/backward_pass.cu src/charts/charts_api.cpp -lcuda -lcudart
 ```
 
 Or use Makefile targets:
@@ -88,6 +88,12 @@ The program prints training progress and then MLP vectors. Shape example:
 [linreg] learned: w=... b=...
 [linreg] target : w=2.500000 b=1.200000
 
+=== Runtime Summary ===
+wrapper training   : ... ms
+native training    : ... ms
+wrapper inference  : ... ms
+native inference   : ... ms
+
 === MLP Forward Demo (PTX wrappers) ===
 input: [ ... ]
 hidden_pre_relu: [ ... ]
@@ -111,13 +117,12 @@ The softmax values should be non-negative and sum close to 1.
 
 ## Generated MLP Charts
 
-After run, the program writes these SVG charts:
+After run (charts enabled), the program writes comparison SVG charts:
 
-- `examples/MLP/charts/linreg_mse_line.svg` (line chart for training loss)
-- `examples/MLP/charts/linreg_grad_bar.svg` (bar chart for `|dw|` checkpoints)
-- `examples/MLP/charts/mlp_softmax_pie.svg` (pie chart of class probabilities)
-- `examples/MLP/charts/mlp_hidden_stacked.svg` (stacked bar chart for hidden pre-ReLU positive/negative magnitudes)
-- `examples/MLP/charts/theme_showcase.svg` (reference dashboard panel in same theme)
+- `examples/MLP/charts/training_loss_comparison.svg` (loss on each epoch: wrapper vs native)
+- `examples/MLP/charts/runtime_comparison.svg` (training and inference time comparison)
+- `examples/MLP/charts/final_param_error.svg` (final learned parameter error)
+- `examples/MLP/charts/softmax_comparison.svg` (wrapper vs native output distribution)
 
 ## Notes
 

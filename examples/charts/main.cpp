@@ -76,7 +76,7 @@ int main() {
     const std::vector<double> grouped_a = {55, 80, 50, 65, 70, 55};
     const std::vector<double> grouped_b = {84, 98, 90, 86, 80, 73};
     if (!create_grouped_bar_chart(
-            "examples/charts/grouped_bar_chart.svg", months, grouped_a, grouped_b, grouped_cfg)) {
+            "examples/charts/grouped_bar_chart.svg", months, grouped_a, grouped_b, "Series A", "Series B", grouped_cfg)) {
         std::cerr << "grouped bar chart failed\n";
         return 1;
     }

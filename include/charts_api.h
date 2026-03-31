@@ -60,6 +60,8 @@ bool create_grouped_bar_chart(
     const std::vector<std::string>& labels,
     const std::vector<double>& series_a,
     const std::vector<double>& series_b,
+    const std::string& series_a_name,
+    const std::string& series_b_name,
     const ChartConfig& config = {});
 
 bool create_horizontal_progress_chart(
