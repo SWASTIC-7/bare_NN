@@ -27,7 +27,8 @@ A minimal neural network framework written in CUDA PTX for educational purposes 
 ### Code structure
 
 - **ptx** this folder will contain the handwritten ptx
-- **src** this folder will contain linking code to make NN
+- **src** this folder will contain components to make NN
+- **example** this folder will contain the example neural networks created using the components
 - **reference** this folder will contain the vibe coded cuda kernels for nn components for comparison
 - **tests** this folder will contain test cuda codes to call ptx written kernels individually
 - **include** common headers and utilities
@@ -113,7 +114,8 @@ bare_NN/
 │       ├── test_matmul
 │       ├── test_reduction_op
 │       └── ptx/          # PTX files for tests
-├── src/
+├── src/                  # contains the componentwise functions for operations
+|-- examples/             # Example neural networks written using library
 ├── tests/
 └── ptx/
 ```

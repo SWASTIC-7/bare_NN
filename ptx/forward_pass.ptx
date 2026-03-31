@@ -1,0 +1,71 @@
+.version 8.0
+.target sm_70
+.address_size 64
+
+// Fully connected layer forward pass kernel
+// input[in_size] * weight[out_size][in_size] -> output[out_size]
+// instead of using this, use matmul
+.visible .entry fc_forward(
+    .param .u64 d_input,
+    .param .u64 d_output,
+    .param .u64 d_weight,
+    .param .u32 in_size,
+    .param .u32 out_size,
+    .param .u32 n
+)
+{
+    .reg .pred      p_bounds;
+    .reg .f32       val_input, val_weight, val_product;
+    .reg .u64       addr_input, addr_output, addr_weight;
+    .reg .u64       ptr_input, ptr_output, ptr_weight;
+    .reg .u64       byte_offset;
+    .reg .u32       ctaid, ntid, tid, idx, total_size;
+    .reg .u32       out_idx, in_idx;
+    .reg .u32       v_in_size, v_out_size;
+    .reg .u32       weight_idx;
+
+    ld.param.u64    addr_input, [d_input];
+    ld.param.u64    addr_output, [d_output];
+    ld.param.u64    addr_weight, [d_weight];
+    ld.param.u32    v_in_size, [in_size];
+    ld.param.u32    v_out_size, [out_size];
+    ld.param.u32    total_size, [n];
+
+    mov.u32         ctaid, %ctaid.x;
+    mov.u32         ntid, %ntid.x;
+    mov.u32         tid, %tid.x;
+    mad.lo.u32      idx, ctaid, ntid, tid;
+
+    setp.ge.u32     p_bounds, idx, total_size;
+    @p_bounds bra   $EXIT_FC_FORWARD;
+
+    // Decompose: out_idx = idx % out_size, in_idx = idx / out_size (threads launched with total_size = out_size * in_size)
+    rem.u32         out_idx, idx, v_out_size;
+    div.u32         in_idx, idx, v_out_size;
+
+    // Convert to global addresses
+    cvta.to.global.u64  ptr_input, addr_input;
+    cvta.to.global.u64  ptr_output, addr_output;
+    cvta.to.global.u64  ptr_weight, addr_weight;
+
+    // Load input[in_idx]
+    mul.wide.u32    byte_offset, in_idx, 4;
+    add.u64         ptr_input, ptr_input, byte_offset;
+    ld.global.f32   val_input, [ptr_input];
+
+    // Load weight[out_idx][in_idx]
+    // weight_idx = out_idx * in_size + in_idx
+    mad.lo.u32      weight_idx, out_idx, v_in_size, in_idx;
+    mul.wide.u32    byte_offset, weight_idx, 4;
+    add.u64         ptr_weight, ptr_weight, byte_offset;
+    ld.global.f32   val_weight, [ptr_weight];
+
+    mul.f32         val_product, val_input, val_weight;
+
+    mul.wide.u32    byte_offset, out_idx, 4;
+    add.u64         ptr_output, ptr_output, byte_offset;
+    atom.global.add.f32 val_product, [ptr_output], val_product;
+
+$EXIT_FC_FORWARD:
+    ret;
+}
