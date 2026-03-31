@@ -1,8 +1,14 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#ifndef BARE_NN_ENABLE_MLP_CHARTS
+#define BARE_NN_ENABLE_MLP_CHARTS 1
+#endif
+
 #include <cmath>
+#if BARE_NN_ENABLE_MLP_CHARTS
 #include <filesystem>
+#endif
 #include <numeric>
 #include <cstdio>
 #include <random>
@@ -10,7 +16,9 @@
 #include <vector>
 
 #include "bare_nn.h"
+#if BARE_NN_ENABLE_MLP_CHARTS
 #include "charts_api.h"
+#endif
 #include "cuda_utils.cuh"
 
 namespace {
@@ -234,6 +242,7 @@ MlpForwardMetrics run_mlp_forward_demo() {
     return metrics;
 }
 
+#if BARE_NN_ENABLE_MLP_CHARTS
 void generate_mlp_charts(const LinearRegressionMetrics& linreg, const MlpForwardMetrics& mlp) {
     std::filesystem::create_directories("examples/MLP/charts");
 
@@ -292,6 +301,7 @@ void generate_mlp_charts(const LinearRegressionMetrics& linreg, const MlpForward
 
     printf("[charts] wrote SVGs to examples/MLP/charts/\n");
 }
+#endif
 
 }  // namespace
 
@@ -307,7 +317,13 @@ int main() {
     MlpForwardMetrics mlp_metrics = run_mlp_forward_demo();
 
     printf("\nCreating charts...\n");
+#if BARE_NN_ENABLE_MLP_CHARTS
     generate_mlp_charts(linreg_metrics, mlp_metrics);
+#else
+    (void)linreg_metrics;
+    (void)mlp_metrics;
+    printf("[charts] disabled (compile with -DBARE_NN_ENABLE_MLP_CHARTS=1 to enable).\n");
+#endif
 
     release_driver_context(dev);
     return 0;

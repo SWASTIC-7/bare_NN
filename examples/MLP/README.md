@@ -43,6 +43,13 @@ Run from repository root:
 nvcc -std=c++17 -Iinclude -o build/mlp_example examples/MLP/main.cu src/activation_fn.cu src/forward_pass.cu src/losses.cu src/backward_pass.cu src/charts/charts_api.cpp -lcuda -lcudart
 ```
 
+Or use Makefile targets:
+
+```bash
+make mlp
+make mlp_no_charts
+```
+
 ## Run
 
 Run from repository root so relative PTX paths resolve correctly:
@@ -56,6 +63,18 @@ On Windows PowerShell:
 ```powershell
 .\build\mlp_example.exe
 ```
+
+Makefile run targets:
+
+```bash
+make run_mlp
+make run_mlp_no_charts
+```
+
+Feature flag used by the MLP example:
+
+- `-DBARE_NN_ENABLE_MLP_CHARTS=1` enables chart export
+- `-DBARE_NN_ENABLE_MLP_CHARTS=0` disables chart export
 
 ## Expected Output
 
