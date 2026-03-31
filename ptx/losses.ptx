@@ -78,9 +78,10 @@ $EXIT_L2_SQUARED_DIFF:
     .reg .u64       addr_predicted, addr_target, addr_partial;
     .reg .u64       ptr_predicted, ptr_target, ptr_partial;
     .reg .u64       byte_offset;
+    .reg .u64       shared_ptr, partner_ptr;
+    .reg .u64       shared_offset64, partner_offset64;
     .reg .u32       ctaid, ntid, tid, idx, total_size;
     .reg .u32       stride, partner_idx;
-    .reg .u32       shared_offset;
 
     ld.param.u64    addr_predicted, [d_predicted];
     ld.param.u64    addr_target, [d_target];
@@ -117,8 +118,11 @@ $EXIT_L2_SQUARED_DIFF:
 
 $STORE_TO_SHARED:
     // Store to shared memory for reduction
-    mul.lo.u32      shared_offset, tid, 4;
-    st.shared.f32   [shared_data + shared_offset], val_local;
+    mov.u64         shared_ptr, shared_data;
+    cvta.to.shared.u64  shared_ptr, shared_ptr;
+    mul.wide.u32    shared_offset64, tid, 4;
+    add.u64         shared_ptr, shared_ptr, shared_offset64;
+    st.shared.f32   [shared_ptr], val_local;
     bar.sync        0;
 
     // Block reduction (tree-based)
@@ -132,16 +136,19 @@ $REDUCE_LOOP:
     @p_reduce bra   $SKIP_REDUCE;
 
     // Load local value
-    ld.shared.f32   val_local, [shared_data + shared_offset];
+    ld.shared.f32   val_local, [shared_ptr];
 
     // Load partner value
     add.u32         partner_idx, tid, stride;
-    mul.lo.u32      partner_idx, partner_idx, 4;
-    ld.shared.f32   val_partner, [shared_data + partner_idx];
+    mov.u64         partner_ptr, shared_data;
+    cvta.to.shared.u64  partner_ptr, partner_ptr;
+    mul.wide.u32    partner_offset64, partner_idx, 4;
+    add.u64         partner_ptr, partner_ptr, partner_offset64;
+    ld.shared.f32   val_partner, [partner_ptr];
 
     // Sum and store back
     add.f32         val_sum, val_local, val_partner;
-    st.shared.f32   [shared_data + shared_offset], val_sum;
+    st.shared.f32   [shared_ptr], val_sum;
 
 $SKIP_REDUCE:
     bar.sync        0;
@@ -153,7 +160,9 @@ $WRITE_PARTIAL_SUM:
     setp.ne.u32     p_bounds, tid, 0;
     @p_bounds bra   $EXIT_L2_NORM;
 
-    ld.shared.f32   val_sum, [shared_data];
+    mov.u64         shared_ptr, shared_data;
+    cvta.to.shared.u64  shared_ptr, shared_ptr;
+    ld.shared.f32   val_sum, [shared_ptr];
     cvta.to.global.u64  ptr_partial, addr_partial;
     mul.wide.u32    byte_offset, ctaid, 4;
     add.u64         ptr_partial, ptr_partial, byte_offset;
@@ -182,9 +191,10 @@ $EXIT_L2_NORM:
     .reg .u64       addr_predicted, addr_target, addr_partial;
     .reg .u64       ptr_predicted, ptr_target, ptr_partial;
     .reg .u64       byte_offset;
+    .reg .u64       shared_ptr, partner_ptr;
+    .reg .u64       shared_offset64, partner_offset64;
     .reg .u32       ctaid, ntid, tid, idx, total_size;
     .reg .u32       stride, partner_idx;
-    .reg .u32       shared_offset;
 
     ld.param.u64    addr_predicted, [d_predicted];
     ld.param.u64    addr_target, [d_target];
@@ -223,8 +233,11 @@ $EXIT_L2_NORM:
 
 $MSE_STORE_TO_SHARED:
     // Store to shared memory for reduction
-    mul.lo.u32      shared_offset, tid, 4;
-    st.shared.f32   [shared_data + shared_offset], val_local;
+    mov.u64         shared_ptr, shared_data;
+    cvta.to.shared.u64  shared_ptr, shared_ptr;
+    mul.wide.u32    shared_offset64, tid, 4;
+    add.u64         shared_ptr, shared_ptr, shared_offset64;
+    st.shared.f32   [shared_ptr], val_local;
     bar.sync        0;
 
     // Block reduction (tree-based)
@@ -238,16 +251,19 @@ $MSE_REDUCE_LOOP:
     @p_reduce bra   $MSE_SKIP_REDUCE;
 
     // Load local value
-    ld.shared.f32   val_local, [shared_data + shared_offset];
+    ld.shared.f32   val_local, [shared_ptr];
 
     // Load partner value
     add.u32         partner_idx, tid, stride;
-    mul.lo.u32      partner_idx, partner_idx, 4;
-    ld.shared.f32   val_partner, [shared_data + partner_idx];
+    mov.u64         partner_ptr, shared_data;
+    cvta.to.shared.u64  partner_ptr, partner_ptr;
+    mul.wide.u32    partner_offset64, partner_idx, 4;
+    add.u64         partner_ptr, partner_ptr, partner_offset64;
+    ld.shared.f32   val_partner, [partner_ptr];
 
     // Sum and store back
     add.f32         val_sum, val_local, val_partner;
-    st.shared.f32   [shared_data + shared_offset], val_sum;
+    st.shared.f32   [shared_ptr], val_sum;
 
 $MSE_SKIP_REDUCE:
     bar.sync        0;
@@ -259,7 +275,9 @@ $MSE_WRITE_PARTIAL:
     setp.ne.u32     p_bounds, tid, 0;
     @p_bounds bra   $EXIT_MSE;
 
-    ld.shared.f32   val_sum, [shared_data];
+    mov.u64         shared_ptr, shared_data;
+    cvta.to.shared.u64  shared_ptr, shared_ptr;
+    ld.shared.f32   val_sum, [shared_ptr];
     
     // Divide by n for mean: sum / n
     cvt.rn.f32.u32  inv_n, total_size;

@@ -1,6 +1,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <numeric>
 #include <cstdio>
 #include <random>
 #include <vector>
@@ -43,16 +44,95 @@ void print_vector(const char* name, const std::vector<float>& v) {
     printf("]\n");
 }
 
-}  // namespace
+void run_linear_regression_training_demo() {
+    constexpr int kSamples = 256;
+    constexpr float kTrueW = 2.5f;
+    constexpr float kTrueB = 1.2f;
+    constexpr int kEpochs = 400;
+    constexpr float kLearningRate = 0.08f;
 
-int main() {
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> x_dist(-2.0f, 2.0f);
+    std::normal_distribution<float> noise_dist(0.0f, 0.05f);
+
+    std::vector<float> h_x(kSamples);
+    std::vector<float> h_y(kSamples);
+    std::vector<float> h_grad(kSamples, 0.0f);
+    std::vector<float> h_tmp_mul(kSamples, 0.0f);
+    std::vector<float> h_sq(kSamples, 0.0f);
+    for (int i = 0; i < kSamples; ++i) {
+        h_x[i] = x_dist(rng);
+        h_y[i] = kTrueW * h_x[i] + kTrueB + noise_dist(rng);
+    }
+
+    CUdeviceptr d_x;
+    CUdeviceptr d_y;
+    CUdeviceptr d_pred;
+    CUdeviceptr d_grad;
+    CUdeviceptr d_sq;
+    CUdeviceptr d_tmp_mul;
+    CU_CHECK(cuMemAlloc(&d_x, kSamples * sizeof(float)));
+    CU_CHECK(cuMemAlloc(&d_y, kSamples * sizeof(float)));
+    CU_CHECK(cuMemAlloc(&d_pred, kSamples * sizeof(float)));
+    CU_CHECK(cuMemAlloc(&d_grad, kSamples * sizeof(float)));
+    CU_CHECK(cuMemAlloc(&d_sq, kSamples * sizeof(float)));
+    CU_CHECK(cuMemAlloc(&d_tmp_mul, kSamples * sizeof(float)));
+
+    CU_CHECK(cuMemcpyHtoD(d_x, h_x.data(), kSamples * sizeof(float)));
+    CU_CHECK(cuMemcpyHtoD(d_y, h_y.data(), kSamples * sizeof(float)));
+
+    float w = -0.7f;
+    float b = 0.3f;
+    float last_mse = 0.0f;
+
+    for (int epoch = 1; epoch <= kEpochs; ++epoch) {
+        // pred = w * x + b
+        bare_nn::vector_scalar_mul(d_x, w, d_pred, kSamples);
+        bare_nn::vector_scalar_add(d_pred, b, d_pred, kSamples);
+
+        // grad = d/dpred MSE(pred, y) = 2 * (pred - y) / n
+        bare_nn::mse_gradient(d_pred, d_y, d_grad, kSamples);
+
+        // dw = sum(grad * x)
+        bare_nn::vector_mul(d_grad, d_x, d_tmp_mul, kSamples);
+
+        // mse = mean((pred - y)^2)
+        bare_nn::l2_squared_diff(d_pred, d_y, d_sq, kSamples);
+
+        CU_CHECK(cuCtxSynchronize());
+
+        CU_CHECK(cuMemcpyDtoH(h_grad.data(), d_grad, kSamples * sizeof(float)));
+        CU_CHECK(cuMemcpyDtoH(h_tmp_mul.data(), d_tmp_mul, kSamples * sizeof(float)));
+        CU_CHECK(cuMemcpyDtoH(h_sq.data(), d_sq, kSamples * sizeof(float)));
+
+        float h_dw = std::accumulate(h_tmp_mul.begin(), h_tmp_mul.end(), 0.0f);
+        float h_db = std::accumulate(h_grad.begin(), h_grad.end(), 0.0f);
+        float h_sq_sum = std::accumulate(h_sq.begin(), h_sq.end(), 0.0f);
+        last_mse = h_sq_sum / static_cast<float>(kSamples);
+
+        w -= kLearningRate * h_dw;
+        b -= kLearningRate * h_db;
+
+        if (epoch == 1 || epoch % 100 == 0 || epoch == kEpochs) {
+            printf("[linreg] epoch=%d mse=%.6f w=%.6f b=%.6f\n", epoch, last_mse, w, b);
+        }
+    }
+
+    printf("[linreg] learned: w=%.6f b=%.6f\n", w, b);
+    printf("[linreg] target : w=%.6f b=%.6f\n", kTrueW, kTrueB);
+
+    cuMemFree(d_x);
+    cuMemFree(d_y);
+    cuMemFree(d_pred);
+    cuMemFree(d_grad);
+    cuMemFree(d_sq);
+    cuMemFree(d_tmp_mul);
+}
+
+void run_mlp_forward_demo() {
     constexpr unsigned int kInDim = 4;
     constexpr unsigned int kHiddenDim = 8;
     constexpr unsigned int kOutDim = 3;
-
-    CUdevice dev;
-    CUcontext ctx;
-    init_driver_context(&dev, &ctx);
 
     std::vector<float> h_input = {0.2f, -0.5f, 0.1f, 0.9f};
     std::vector<float> h_w1 = random_vector(kInDim * kHiddenDim, -0.4f, 0.4f, 7);
@@ -113,6 +193,20 @@ int main() {
     cuMemFree(d_w2);
     cuMemFree(d_logits);
     cuMemFree(d_probs);
+}
+
+}  // namespace
+
+int main() {
+    CUdevice dev;
+    CUcontext ctx;
+    init_driver_context(&dev, &ctx);
+
+    printf("=== Linear Regression Training (GPU) ===\n");
+    run_linear_regression_training_demo();
+
+    printf("\n=== MLP Forward Demo (PTX wrappers) ===\n");
+    run_mlp_forward_demo();
 
     release_driver_context(dev);
     return 0;

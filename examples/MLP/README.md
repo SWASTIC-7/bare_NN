@@ -1,10 +1,24 @@
-# MLP Example
+# MLP + Training Example
 
-This folder contains a simple functional MLP inference example built with the wrapper library API.
+This folder contains one executable with two demonstrations:
+
+1. Linear regression training on synthetic data.
+2. A 2-layer MLP forward pass using PTX-backed wrapper calls.
 
 ## What It Does
 
-The example in [examples/MLP/main.cu](examples/MLP/main.cu) runs a 2-layer MLP forward pass on GPU:
+### 1) Linear Regression Training
+
+The example first creates synthetic data on host:
+
+`y = 2.5 * x + 1.2 + noise`
+
+Then it trains scalar parameters `(w, b)` on GPU using MSE with gradient descent.
+You should see the MSE decrease over epochs and `(w, b)` converge near `(2.5, 1.2)`.
+
+### 2) MLP Forward Pass
+
+After training, the same program runs a 2-layer MLP forward pass:
 
 - Input vector size: 4
 - Hidden layer size: 8
@@ -19,7 +33,7 @@ Execution flow:
 3. Logits = FC(hidden activation, W2)
 4. Probabilities = Softmax(logits)
 
-All operations are dispatched through PTX-backed wrapper functions from the library.
+The MLP operations are dispatched through PTX-backed wrapper functions from the library.
 
 ## Build
 
@@ -45,7 +59,25 @@ On Windows PowerShell:
 
 ## Expected Output
 
-The program prints:
+The program prints training progress and then MLP vectors. Shape example:
+
+```text
+=== Linear Regression Training (GPU) ===
+[linreg] epoch=1 mse=...
+[linreg] epoch=100 mse=...
+...
+[linreg] learned: w=... b=...
+[linreg] target : w=2.500000 b=1.200000
+
+=== MLP Forward Demo (PTX wrappers) ===
+input: [ ... ]
+hidden_pre_relu: [ ... ]
+hidden_post_relu: [ ... ]
+logits: [ ... ]
+softmax: [ ... ]
+```
+
+The MLP section includes:
 
 - input
 - hidden_pre_relu
@@ -57,6 +89,5 @@ The softmax values should be non-negative and sum close to 1.
 
 ## Notes
 
-- This example is inference-only.
 - Weights are randomly initialized with fixed seeds for deterministic runs.
 - The wrapper softmax kernel currently supports vectors up to 1024 elements in one launch.
