@@ -184,9 +184,10 @@ $PASS_TANH:
     .reg .pred      p1, p2, p3;
     .reg .f32       val, max_val, shifted, exp_val, sum_val, result;
     .reg .f32       other_val, log2e, one;
-    .reg .u64       rd_a, rd_c, addr_a, addr_c, ptr, offset;
+    .reg .u64       rd_a, rd_c, addr_a, addr_c, ptr, g_offset;
+    .reg .u64       sh_base, sh_ptr, sh_partner_ptr, sh_partner_offset64;
     .reg .u32       tid, ntid, total_size, stride, partner;
-    .shared .align 4 .f32 sdata[1024];  // shared memory for reductions
+    .shared .align 4 .b8 sdata[4096];  // shared memory for reductions
 
     ld.param.u64    rd_a, [d_a];
     ld.param.u64    rd_c, [d_c];
@@ -196,21 +197,24 @@ $PASS_TANH:
 
     cvta.to.global.u64  addr_a, rd_a;
     cvta.to.global.u64  addr_c, rd_c;
+    mov.u64             sh_base, sdata;
 
     // Load value into shared memory (or -inf if out of bounds)
     setp.ge.u32     p1, tid, total_size;
     @p1 bra         $SOFTMAX_LOAD_NEG_INF;
     
-    mul.wide.u32    offset, tid, 4;
-    add.u64         ptr, addr_a, offset;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         ptr, addr_a, g_offset;
     ld.global.f32   val, [ptr];
-    st.shared.f32   [sdata + offset], val;
+    add.u64         sh_ptr, sh_base, g_offset;
+    st.shared.f32   [sh_ptr], val;
     bra             $SOFTMAX_FIND_MAX;
 
 $SOFTMAX_LOAD_NEG_INF:
-    mul.wide.u32    offset, tid, 4;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
     mov.f32         val, 0fFF800000;  // -infinity
-    st.shared.f32   [sdata + offset], val;
+    st.shared.f32   [sh_ptr], val;
 
 $SOFTMAX_FIND_MAX:
     bar.sync        0;
@@ -226,13 +230,14 @@ $SOFTMAX_MAX_LOOP:
     @p3 bra         $SOFTMAX_MAX_SKIP;
     
     add.u32         partner, tid, stride;
-    mul.wide.u32    offset, tid, 4;
-    ld.shared.f32   val, [sdata + offset];
-    mul.wide.u32    offset, partner, 4;
-    ld.shared.f32   other_val, [sdata + offset];
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
+    ld.shared.f32   val, [sh_ptr];
+    mul.wide.u32    sh_partner_offset64, partner, 4;
+    add.u64         sh_partner_ptr, sh_base, sh_partner_offset64;
+    ld.shared.f32   other_val, [sh_partner_ptr];
     max.f32         val, val, other_val;
-    mul.wide.u32    offset, tid, 4;
-    st.shared.f32   [sdata + offset], val;
+    st.shared.f32   [sh_ptr], val;
 
 $SOFTMAX_MAX_SKIP:
     bar.sync        0;
@@ -248,8 +253,8 @@ $SOFTMAX_MAX_DONE:
     setp.ge.u32     p1, tid, total_size;
     @p1 bra         $SOFTMAX_EXP_ZERO;
     
-    mul.wide.u32    offset, tid, 4;
-    add.u64         ptr, addr_a, offset;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         ptr, addr_a, g_offset;
     ld.global.f32   val, [ptr];
     sub.f32         shifted, val, max_val;
     
@@ -257,13 +262,15 @@ $SOFTMAX_MAX_DONE:
     mov.f32         log2e, 0f3FB8AA3B;
     mul.f32         shifted, shifted, log2e;
     ex2.approx.f32  exp_val, shifted;
-    st.shared.f32   [sdata + offset], exp_val;
+    add.u64         sh_ptr, sh_base, g_offset;
+    st.shared.f32   [sh_ptr], exp_val;
     bra             $SOFTMAX_SUM_INIT;
 
 $SOFTMAX_EXP_ZERO:
-    mul.wide.u32    offset, tid, 4;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
     mov.f32         exp_val, 0.0;
-    st.shared.f32   [sdata + offset], exp_val;
+    st.shared.f32   [sh_ptr], exp_val;
 
 $SOFTMAX_SUM_INIT:
     bar.sync        0;
@@ -279,13 +286,14 @@ $SOFTMAX_SUM_LOOP:
     @p3 bra         $SOFTMAX_SUM_SKIP;
     
     add.u32         partner, tid, stride;
-    mul.wide.u32    offset, tid, 4;
-    ld.shared.f32   val, [sdata + offset];
-    mul.wide.u32    offset, partner, 4;
-    ld.shared.f32   other_val, [sdata + offset];
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
+    ld.shared.f32   val, [sh_ptr];
+    mul.wide.u32    sh_partner_offset64, partner, 4;
+    add.u64         sh_partner_ptr, sh_base, sh_partner_offset64;
+    ld.shared.f32   other_val, [sh_partner_ptr];
     add.f32         val, val, other_val;
-    mul.wide.u32    offset, tid, 4;
-    st.shared.f32   [sdata + offset], val;
+    st.shared.f32   [sh_ptr], val;
 
 $SOFTMAX_SUM_SKIP:
     bar.sync        0;
@@ -301,8 +309,8 @@ $SOFTMAX_SUM_DONE:
     setp.ge.u32     p1, tid, total_size;
     @p1 bra         $SOFTMAX_END;
     
-    mul.wide.u32    offset, tid, 4;
-    add.u64         ptr, addr_a, offset;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         ptr, addr_a, g_offset;
     ld.global.f32   val, [ptr];
     sub.f32         shifted, val, max_val;
     mov.f32         log2e, 0f3FB8AA3B;
@@ -310,7 +318,7 @@ $SOFTMAX_SUM_DONE:
     ex2.approx.f32  exp_val, shifted;
     div.approx.f32  result, exp_val, sum_val;
     
-    add.u64         ptr, addr_c, offset;
+    add.u64         ptr, addr_c, g_offset;
     st.global.f32   [ptr], result;
 
 $SOFTMAX_END:
@@ -329,9 +337,10 @@ $SOFTMAX_END:
     .reg .pred      p1, p2, p3;
     .reg .f32       val, max_val, shifted, exp_val, sum_val, log_sum, result;
     .reg .f32       other_val, log2e, rcp_log2e, one;
-    .reg .u64       rd_a, rd_c, addr_a, addr_c, ptr, offset;
+    .reg .u64       rd_a, rd_c, addr_a, addr_c, ptr, g_offset;
+    .reg .u64       sh_base, sh_ptr, sh_partner_ptr, sh_partner_offset64;
     .reg .u32       tid, ntid, total_size, stride, partner;
-    .shared .align 4 .f32 sdata[1024];
+    .shared .align 4 .b8 sdata[4096];
 
     ld.param.u64    rd_a, [d_a];
     ld.param.u64    rd_c, [d_c];
@@ -341,21 +350,24 @@ $SOFTMAX_END:
 
     cvta.to.global.u64  addr_a, rd_a;
     cvta.to.global.u64  addr_c, rd_c;
+    mov.u64             sh_base, sdata;
 
     // Load value into shared memory (or -inf if out of bounds)
     setp.ge.u32     p1, tid, total_size;
     @p1 bra         $LOGSM_LOAD_NEG_INF;
     
-    mul.wide.u32    offset, tid, 4;
-    add.u64         ptr, addr_a, offset;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         ptr, addr_a, g_offset;
     ld.global.f32   val, [ptr];
-    st.shared.f32   [sdata + offset], val;
+    add.u64         sh_ptr, sh_base, g_offset;
+    st.shared.f32   [sh_ptr], val;
     bra             $LOGSM_FIND_MAX;
 
 $LOGSM_LOAD_NEG_INF:
-    mul.wide.u32    offset, tid, 4;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
     mov.f32         val, 0fFF800000;  // -infinity
-    st.shared.f32   [sdata + offset], val;
+    st.shared.f32   [sh_ptr], val;
 
 $LOGSM_FIND_MAX:
     bar.sync        0;
@@ -371,13 +383,14 @@ $LOGSM_MAX_LOOP:
     @p3 bra         $LOGSM_MAX_SKIP;
     
     add.u32         partner, tid, stride;
-    mul.wide.u32    offset, tid, 4;
-    ld.shared.f32   val, [sdata + offset];
-    mul.wide.u32    offset, partner, 4;
-    ld.shared.f32   other_val, [sdata + offset];
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
+    ld.shared.f32   val, [sh_ptr];
+    mul.wide.u32    sh_partner_offset64, partner, 4;
+    add.u64         sh_partner_ptr, sh_base, sh_partner_offset64;
+    ld.shared.f32   other_val, [sh_partner_ptr];
     max.f32         val, val, other_val;
-    mul.wide.u32    offset, tid, 4;
-    st.shared.f32   [sdata + offset], val;
+    st.shared.f32   [sh_ptr], val;
 
 $LOGSM_MAX_SKIP:
     bar.sync        0;
@@ -392,21 +405,23 @@ $LOGSM_MAX_DONE:
     setp.ge.u32     p1, tid, total_size;
     @p1 bra         $LOGSM_EXP_ZERO;
     
-    mul.wide.u32    offset, tid, 4;
-    add.u64         ptr, addr_a, offset;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         ptr, addr_a, g_offset;
     ld.global.f32   val, [ptr];
     sub.f32         shifted, val, max_val;
     
     mov.f32         log2e, 0f3FB8AA3B;
     mul.f32         shifted, shifted, log2e;
     ex2.approx.f32  exp_val, shifted;
-    st.shared.f32   [sdata + offset], exp_val;
+    add.u64         sh_ptr, sh_base, g_offset;
+    st.shared.f32   [sh_ptr], exp_val;
     bra             $LOGSM_SUM_INIT;
 
 $LOGSM_EXP_ZERO:
-    mul.wide.u32    offset, tid, 4;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
     mov.f32         exp_val, 0.0;
-    st.shared.f32   [sdata + offset], exp_val;
+    st.shared.f32   [sh_ptr], exp_val;
 
 $LOGSM_SUM_INIT:
     bar.sync        0;
@@ -422,13 +437,14 @@ $LOGSM_SUM_LOOP:
     @p3 bra         $LOGSM_SUM_SKIP;
     
     add.u32         partner, tid, stride;
-    mul.wide.u32    offset, tid, 4;
-    ld.shared.f32   val, [sdata + offset];
-    mul.wide.u32    offset, partner, 4;
-    ld.shared.f32   other_val, [sdata + offset];
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         sh_ptr, sh_base, g_offset;
+    ld.shared.f32   val, [sh_ptr];
+    mul.wide.u32    sh_partner_offset64, partner, 4;
+    add.u64         sh_partner_ptr, sh_base, sh_partner_offset64;
+    ld.shared.f32   other_val, [sh_partner_ptr];
     add.f32         val, val, other_val;
-    mul.wide.u32    offset, tid, 4;
-    st.shared.f32   [sdata + offset], val;
+    st.shared.f32   [sh_ptr], val;
 
 $LOGSM_SUM_SKIP:
     bar.sync        0;
@@ -442,20 +458,20 @@ $LOGSM_SUM_DONE:
     // Compute log(sum) using: log(x) = log2(x) / log2(e)
     // log2(x) via lg2.approx, then multiply by 1/log2(e) = ln(2)
     lg2.approx.f32  log_sum, sum_val;
-    mov.f32         rcp_log2e, 0f3F317218;  // ln(2) ≈ 0.6931472
+    mov.f32         rcp_log2e, 0f3F317218;  // ln(2) ~= 0.6931472
     mul.f32         log_sum, log_sum, rcp_log2e;
     
     // Compute final log-softmax: x - max - log(sum)
     setp.ge.u32     p1, tid, total_size;
     @p1 bra         $LOGSM_END;
     
-    mul.wide.u32    offset, tid, 4;
-    add.u64         ptr, addr_a, offset;
+    mul.wide.u32    g_offset, tid, 4;
+    add.u64         ptr, addr_a, g_offset;
     ld.global.f32   val, [ptr];
     sub.f32         result, val, max_val;
     sub.f32         result, result, log_sum;
     
-    add.u64         ptr, addr_c, offset;
+    add.u64         ptr, addr_c, g_offset;
     st.global.f32   [ptr], result;
 
 $LOGSM_END:

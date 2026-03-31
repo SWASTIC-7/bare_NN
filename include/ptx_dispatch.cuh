@@ -2,8 +2,10 @@
 
 #include <cuda.h>
 
+#include <fstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "cuda_utils.cuh"
 
@@ -95,7 +97,56 @@ private:
 
         const std::string full_path = ptx_root_ + ptx_file;
         CUmodule module;
-        CU_CHECK(cuModuleLoad(&module, full_path.c_str()));
+
+        std::ifstream fin(full_path);
+        if (!fin) {
+            fprintf(stderr, "Failed to open PTX file: %s\n", full_path.c_str());
+            exit(EXIT_FAILURE);
+        }
+
+        std::string ptx_source((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+
+        std::vector<char> error_log(8192, 0);
+        std::vector<char> info_log(8192, 0);
+        unsigned int error_log_size = static_cast<unsigned int>(error_log.size());
+        unsigned int info_log_size = static_cast<unsigned int>(info_log.size());
+
+        CUjit_option options[] = {
+            CU_JIT_ERROR_LOG_BUFFER,
+            CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES,
+            CU_JIT_INFO_LOG_BUFFER,
+            CU_JIT_INFO_LOG_BUFFER_SIZE_BYTES,
+            CU_JIT_TARGET_FROM_CUCONTEXT
+        };
+
+        void* option_values[] = {
+            error_log.data(),
+            reinterpret_cast<void*>(static_cast<uintptr_t>(error_log_size)),
+            info_log.data(),
+            reinterpret_cast<void*>(static_cast<uintptr_t>(info_log_size)),
+            nullptr
+        };
+
+        CUresult load_res = cuModuleLoadDataEx(
+            &module,
+            ptx_source.c_str(),
+            sizeof(options) / sizeof(options[0]),
+            options,
+            option_values);
+
+        if (load_res != CUDA_SUCCESS) {
+            const char* msg = nullptr;
+            cuGetErrorString(load_res, &msg);
+            fprintf(stderr, "CUDA Driver Error loading PTX %s: %s\n", full_path.c_str(), msg ? msg : "unknown");
+            if (!error_log.empty() && error_log[0] != '\0') {
+                fprintf(stderr, "PTX JIT error log:\n%s\n", error_log.data());
+            }
+            if (!info_log.empty() && info_log[0] != '\0') {
+                fprintf(stderr, "PTX JIT info log:\n%s\n", info_log.data());
+            }
+            exit(EXIT_FAILURE);
+        }
+
         modules_[ptx_file] = module;
         return module;
     }
