@@ -42,6 +42,38 @@ bool create_line_chart(
     const std::vector<double>& values,
     const ChartConfig& config = {});
 
+bool create_area_line_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& x_labels,
+    const std::vector<double>& values,
+    const ChartConfig& config = {});
+
+bool create_multi_line_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& x_labels,
+    const std::vector<std::vector<double>>& series,
+    const std::vector<std::string>& series_names,
+    const ChartConfig& config = {});
+
+bool create_grouped_bar_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& labels,
+    const std::vector<double>& series_a,
+    const std::vector<double>& series_b,
+    const ChartConfig& config = {});
+
+bool create_horizontal_progress_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& labels,
+    const std::vector<double>& values,
+    const ChartConfig& config = {});
+
+bool create_horizontal_ranked_bar_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& labels,
+    const std::vector<double>& values,
+    const ChartConfig& config = {});
+
 bool create_stacked_bar_chart(
     const std::string& output_svg,
     const std::vector<std::string>& categories,

@@ -77,6 +77,15 @@ void draw_grid(std::ostringstream& ss, const ChartConfig& cfg, int x0, int y0, i
     }
 }
 
+void draw_vertical_grid(std::ostringstream& ss, const ChartConfig& cfg, int x0, int y0, int w, int h, int cols) {
+    for (int i = 0; i <= cols; ++i) {
+        int x = x0 + (w * i) / cols;
+        ss << "<line x1=\"" << x << "\" y1=\"" << y0 << "\" x2=\"" << x
+           << "\" y2=\"" << (y0 + h) << "\" stroke=\"" << cfg.theme.grid
+           << "\" stroke-width=\"1\" opacity=\"0.8\"/>\n";
+    }
+}
+
 }  // namespace
 
 bool create_bar_chart(
@@ -225,6 +234,251 @@ bool create_line_chart(
            << "\" fill=\"" << config.theme.ink
            << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
            << esc(x_labels[static_cast<size_t>(i)]) << "</text>\n";
+    }
+
+    end_svg(ss);
+    return write_svg(output_svg, ss);
+}
+
+bool create_area_line_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& x_labels,
+    const std::vector<double>& values,
+    const ChartConfig& config) {
+    if (x_labels.empty() || x_labels.size() != values.size()) {
+        return false;
+    }
+
+    std::ostringstream ss;
+    start_svg(ss, config);
+
+    const int x0 = config.padding;
+    const int y0 = config.padding;
+    const int w = config.width - config.padding * 2;
+    const int h = config.height - config.padding * 2;
+
+    draw_grid(ss, config, x0, y0, w, h, 6);
+    draw_vertical_grid(ss, config, x0, y0, w, h, static_cast<int>(values.size()));
+
+    const double min_v = *std::min_element(values.begin(), values.end());
+    const double max_v = *std::max_element(values.begin(), values.end());
+    const double span = std::max(1e-9, max_v - min_v);
+
+    ss << "<defs>\n";
+    ss << "<pattern id=\"diagHatch\" patternUnits=\"userSpaceOnUse\" width=\"10\" height=\"10\" patternTransform=\"rotate(18)\">\n";
+    ss << "<line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"10\" stroke=\"" << config.theme.muted << "\" stroke-width=\"2\" opacity=\"0.55\"/>\n";
+    ss << "</pattern>\n";
+    ss << "</defs>\n";
+
+    ss << "<polygon points=\"";
+    for (size_t i = 0; i < values.size(); ++i) {
+        const double t = static_cast<double>(i) / std::max<size_t>(1, values.size() - 1);
+        const double x = x0 + t * w;
+        const double y = y0 + h - ((values[i] - min_v) / span) * (h - 24);
+        ss << x << "," << y << " ";
+    }
+    ss << (x0 + w) << "," << (y0 + h) << " " << x0 << "," << (y0 + h) << "\" fill=\"url(#diagHatch)\" opacity=\"0.9\"/>\n";
+
+    ss << "<polyline fill=\"none\" stroke=\"" << config.theme.palette[0]
+       << "\" stroke-width=\"3\" points=\"";
+    for (size_t i = 0; i < values.size(); ++i) {
+        const double t = static_cast<double>(i) / std::max<size_t>(1, values.size() - 1);
+        const double x = x0 + t * w;
+        const double y = y0 + h - ((values[i] - min_v) / span) * (h - 24);
+        ss << x << "," << y << " ";
+    }
+    ss << "\"/>\n";
+
+    end_svg(ss);
+    return write_svg(output_svg, ss);
+}
+
+bool create_multi_line_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& x_labels,
+    const std::vector<std::vector<double>>& series,
+    const std::vector<std::string>& series_names,
+    const ChartConfig& config) {
+    if (x_labels.empty() || series.empty() || series.size() != series_names.size()) {
+        return false;
+    }
+    for (const auto& s : series) {
+        if (s.size() != x_labels.size()) {
+            return false;
+        }
+    }
+
+    std::ostringstream ss;
+    start_svg(ss, config);
+
+    const int x0 = config.padding;
+    const int y0 = config.padding;
+    const int w = config.width - config.padding * 2;
+    const int h = config.height - config.padding * 2;
+    draw_grid(ss, config, x0, y0, w, h, 4);
+    draw_vertical_grid(ss, config, x0, y0, w, h, static_cast<int>(x_labels.size()));
+
+    double min_v = series[0][0];
+    double max_v = series[0][0];
+    for (const auto& s : series) {
+        min_v = std::min(min_v, *std::min_element(s.begin(), s.end()));
+        max_v = std::max(max_v, *std::max_element(s.begin(), s.end()));
+    }
+    const double span = std::max(1e-9, max_v - min_v);
+
+    for (size_t j = 0; j < series.size(); ++j) {
+        ss << "<polyline fill=\"none\" stroke=\"" << color_at(config.theme.palette, static_cast<int>(j))
+           << "\" stroke-width=\"2.6\" points=\"";
+        for (size_t i = 0; i < x_labels.size(); ++i) {
+            const double t = static_cast<double>(i) / std::max<size_t>(1, x_labels.size() - 1);
+            const double x = x0 + t * w;
+            const double y = y0 + h - ((series[j][i] - min_v) / span) * (h - 24);
+            ss << x << "," << y << " ";
+        }
+        ss << "\"/>\n";
+    }
+
+    for (size_t i = 0; i < x_labels.size(); ++i) {
+        const double t = static_cast<double>(i) / std::max<size_t>(1, x_labels.size() - 1);
+        const double x = x0 + t * w;
+        ss << "<text x=\"" << x << "\" y=\"" << (y0 + h + 22)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
+           << esc(x_labels[i]) << "</text>\n";
+    }
+
+    const int lx = x0 + 8;
+    int ly = y0 + 10;
+    for (size_t j = 0; j < series_names.size(); ++j) {
+        ss << "<rect x=\"" << lx << "\" y=\"" << ly << "\" width=\"14\" height=\"14\" rx=\"3\" fill=\""
+           << color_at(config.theme.palette, static_cast<int>(j)) << "\"/>\n";
+        ss << "<text x=\"" << (lx + 20) << "\" y=\"" << (ly + 12)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\">"
+           << esc(series_names[j]) << "</text>\n";
+        ly += 20;
+    }
+
+    end_svg(ss);
+    return write_svg(output_svg, ss);
+}
+
+bool create_grouped_bar_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& labels,
+    const std::vector<double>& series_a,
+    const std::vector<double>& series_b,
+    const ChartConfig& config) {
+    if (labels.empty() || labels.size() != series_a.size() || labels.size() != series_b.size()) {
+        return false;
+    }
+
+    std::ostringstream ss;
+    start_svg(ss, config);
+
+    const int x0 = config.padding;
+    const int y0 = config.padding;
+    const int w = config.width - config.padding * 2;
+    const int h = config.height - config.padding * 2;
+    draw_grid(ss, config, x0, y0, w, h, 4);
+
+    double max_v = 1.0;
+    for (size_t i = 0; i < labels.size(); ++i) {
+        max_v = std::max(max_v, std::max(series_a[i], series_b[i]));
+    }
+
+    const double group_w = static_cast<double>(w) / labels.size();
+    const double bar_w = group_w * 0.22;
+    for (size_t i = 0; i < labels.size(); ++i) {
+        const double base_x = x0 + i * group_w + group_w * 0.24;
+        const double ha = (series_a[i] / max_v) * (h - 26);
+        const double hb = (series_b[i] / max_v) * (h - 26);
+        ss << "<rect x=\"" << base_x << "\" y=\"" << (y0 + h - ha) << "\" width=\"" << bar_w
+           << "\" height=\"" << ha << "\" fill=\"" << color_at(config.theme.palette, 0) << "\"/>\n";
+        ss << "<rect x=\"" << (base_x + bar_w + group_w * 0.08) << "\" y=\"" << (y0 + h - hb)
+           << "\" width=\"" << bar_w << "\" height=\"" << hb
+           << "\" fill=\"" << color_at(config.theme.palette, 1) << "\"/>\n";
+        ss << "<text x=\"" << (x0 + i * group_w + group_w * 0.5) << "\" y=\"" << (y0 + h + 22)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" text-anchor=\"middle\">"
+           << esc(labels[i]) << "</text>\n";
+    }
+
+    end_svg(ss);
+    return write_svg(output_svg, ss);
+}
+
+bool create_horizontal_progress_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& labels,
+    const std::vector<double>& values,
+    const ChartConfig& config) {
+    if (labels.empty() || labels.size() != values.size()) {
+        return false;
+    }
+
+    std::ostringstream ss;
+    start_svg(ss, config);
+
+    const int x0 = config.padding + 30;
+    const int y0 = config.padding + 40;
+    const int w = config.width - config.padding * 2 - 60;
+    const int row_h = std::max(30, (config.height - config.padding * 2 - 40) / static_cast<int>(labels.size()));
+
+    for (size_t i = 0; i < values.size(); ++i) {
+        const double clamped = std::max(0.0, std::min(100.0, values[i]));
+        const int y = y0 + static_cast<int>(i) * row_h;
+        ss << "<rect x=\"" << x0 << "\" y=\"" << y << "\" width=\"" << w
+           << "\" height=\"12\" rx=\"6\" fill=\"#dbe4e8\"/>\n";
+        ss << "<rect x=\"" << x0 << "\" y=\"" << y << "\" width=\"" << (w * clamped / 100.0)
+           << "\" height=\"12\" rx=\"6\" fill=\"" << color_at(config.theme.palette, static_cast<int>(i)) << "\"/>\n";
+        ss << "<text x=\"" << x0 << "\" y=\"" << (y - 6)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"12\" font-weight=\"700\">"
+           << esc(labels[i]) << "</text>\n";
+        ss << "<text x=\"" << (x0 + w + 8) << "\" y=\"" << (y + 10)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"11\">100</text>\n";
+        ss << "<text x=\"" << (x0 + w * 0.5) << "\" y=\"" << (y + 10)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"11\" text-anchor=\"middle\">50</text>\n";
+        ss << "<text x=\"" << (x0 - 12) << "\" y=\"" << (y + 10)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"11\" text-anchor=\"end\">0</text>\n";
+    }
+
+    end_svg(ss);
+    return write_svg(output_svg, ss);
+}
+
+bool create_horizontal_ranked_bar_chart(
+    const std::string& output_svg,
+    const std::vector<std::string>& labels,
+    const std::vector<double>& values,
+    const ChartConfig& config) {
+    if (labels.empty() || labels.size() != values.size()) {
+        return false;
+    }
+
+    const double max_v = std::max(1.0, *std::max_element(values.begin(), values.end()));
+
+    std::ostringstream ss;
+    start_svg(ss, config);
+
+    const int x0 = config.padding + 120;
+    const int y0 = config.padding + 30;
+    const int w = config.width - config.padding * 2 - 130;
+    const int row_h = std::max(30, (config.height - config.padding * 2 - 20) / static_cast<int>(labels.size()));
+
+    for (size_t i = 0; i < values.size(); ++i) {
+        const int y = y0 + static_cast<int>(i) * row_h;
+        const double bw = (values[i] / max_v) * w;
+        ss << "<text x=\"" << (x0 - 14) << "\" y=\"" << (y + 14)
+           << "\" fill=\"" << config.theme.ink
+           << "\" font-family=\"Segoe UI, Tahoma, sans-serif\" font-size=\"18\" text-anchor=\"end\">"
+           << esc(labels[i]) << "</text>\n";
+        ss << "<rect x=\"" << x0 << "\" y=\"" << y << "\" width=\"" << bw
+           << "\" height=\"16\" rx=\"0\" fill=\"" << color_at(config.theme.palette, static_cast<int>(i)) << "\"/>\n";
     }
 
     end_svg(ss);

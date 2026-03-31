@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="420" viewBox="0 0 980 420">
+<defs>
+<linearGradient id="bgFade" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eef2f3"/>
+<stop offset="100%" stop-color="#dfe7ea"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="url(#bgFade)"/>
+<rect x="16" y="16" width="948" height="388" rx="22" fill="#ffffff" stroke="#d8e1e5" stroke-width="2"/>
+<text x="64" y="44" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="26" font-weight="700">Grouped Bars by Month</text>
+<line x1="64" y1="64" x2="916" y2="64" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="137" x2="916" y2="137" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="210" x2="916" y2="210" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="283" x2="916" y2="283" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="356" x2="916" y2="356" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<rect x="98.08" y="206.714" width="31.24" height="149.286" fill="#385663"/>
+<rect x="140.68" y="128" width="31.24" height="228" fill="#4f6f7b"/>
+<text x="135" y="378" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">JAN</text>
+<rect x="240.08" y="138.857" width="31.24" height="217.143" fill="#385663"/>
+<rect x="282.68" y="90" width="31.24" height="266" fill="#4f6f7b"/>
+<text x="277" y="378" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">FEB</text>
+<rect x="382.08" y="220.286" width="31.24" height="135.714" fill="#385663"/>
+<rect x="424.68" y="111.714" width="31.24" height="244.286" fill="#4f6f7b"/>
+<text x="419" y="378" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">MAR</text>
+<rect x="524.08" y="179.571" width="31.24" height="176.429" fill="#385663"/>
+<rect x="566.68" y="122.571" width="31.24" height="233.429" fill="#4f6f7b"/>
+<text x="561" y="378" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">APR</text>
+<rect x="666.08" y="166" width="31.24" height="190" fill="#385663"/>
+<rect x="708.68" y="138.857" width="31.24" height="217.143" fill="#4f6f7b"/>
+<text x="703" y="378" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">MAY</text>
+<rect x="808.08" y="206.714" width="31.24" height="149.286" fill="#385663"/>
+<rect x="850.68" y="157.857" width="31.24" height="198.143" fill="#4f6f7b"/>
+<text x="845" y="378" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="12" text-anchor="middle">JUN</text>
+</svg>

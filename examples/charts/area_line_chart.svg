@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="360" viewBox="0 0 980 360">
+<defs>
+<linearGradient id="bgFade" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eef2f3"/>
+<stop offset="100%" stop-color="#dfe7ea"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="url(#bgFade)"/>
+<rect x="16" y="16" width="948" height="328" rx="22" fill="#ffffff" stroke="#d8e1e5" stroke-width="2"/>
+<text x="64" y="44" fill="#2f4a57" font-family="Segoe UI, Tahoma, sans-serif" font-size="26" font-weight="700">Striped Area Trend</text>
+<line x1="64" y1="64" x2="916" y2="64" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="102" x2="916" y2="102" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="141" x2="916" y2="141" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="180" x2="916" y2="180" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="218" x2="916" y2="218" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="257" x2="916" y2="257" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="296" x2="916" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.7"/>
+<line x1="64" y1="64" x2="64" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="170" y1="64" x2="170" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="277" y1="64" x2="277" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="383" y1="64" x2="383" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="490" y1="64" x2="490" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="596" y1="64" x2="596" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="703" y1="64" x2="703" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="809" y1="64" x2="809" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<line x1="916" y1="64" x2="916" y2="296" stroke="#cfd8dd" stroke-width="1" opacity="0.8"/>
+<defs>
+<pattern id="diagHatch" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(18)">
+<line x1="0" y1="0" x2="0" y2="10" stroke="#8aa0aa" stroke-width="2" opacity="0.55"/>
+</pattern>
+</defs>
+<polygon points="64,267.892 185.714,296 307.429,251.027 429.143,200.432 550.857,217.297 672.571,183.568 794.286,132.973 916,88 916,296 64,296" fill="url(#diagHatch)" opacity="0.9"/>
+<polyline fill="none" stroke="#385663" stroke-width="3" points="64,267.892 185.714,296 307.429,251.027 429.143,200.432 550.857,217.297 672.571,183.568 794.286,132.973 916,88 "/>
+</svg>

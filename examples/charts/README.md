@@ -8,6 +8,11 @@ Generated chart files:
 - `examples/charts/pie_chart.svg`
 - `examples/charts/line_chart.svg`
 - `examples/charts/stacked_bar_chart.svg`
+- `examples/charts/area_line_chart.svg`
+- `examples/charts/multi_line_chart.svg`
+- `examples/charts/grouped_bar_chart.svg`
+- `examples/charts/horizontal_progress_chart.svg`
+- `examples/charts/horizontal_ranked_bar_chart.svg`
 - `examples/charts/theme_showcase.svg`
 
 ## Build
@@ -30,4 +35,4 @@ On PowerShell:
 .\build\charts_example.exe
 ```
 
-The output SVGs are styled with a cool gray analytics dashboard theme inspired by your reference image.
+The output SVGs are styled with a cool gray analytics dashboard theme inspired by your reference image and include synthetic datasets for each chart type.

@@ -46,6 +46,61 @@ int main() {
         return 1;
     }
 
+    ChartConfig area_cfg = cfg;
+    area_cfg.height = 360;
+    area_cfg.title = "Striped Area Trend";
+    const std::vector<std::string> area_x = {"A", "B", "C", "D", "E", "F", "G", "H"};
+    const std::vector<double> area_y = {42, 37, 45, 54, 51, 57, 66, 74};
+    if (!create_area_line_chart("examples/charts/area_line_chart.svg", area_x, area_y, area_cfg)) {
+        std::cerr << "area line chart failed\n";
+        return 1;
+    }
+
+    ChartConfig multi_cfg = cfg;
+    multi_cfg.title = "Dual-Line Panel";
+    const std::vector<std::string> multi_x = {"A", "B", "C", "D", "E", "F", "G", "H", "A"};
+    const std::vector<std::vector<double>> multi_series = {
+        {36, 34, 40, 58, 52, 89, 46, 68, 75},
+        {14, 22, 30, 54, 38, 28, 50, 44, 18}
+    };
+    const std::vector<std::string> multi_names = {"Series 1", "Series 2"};
+    if (!create_multi_line_chart(
+            "examples/charts/multi_line_chart.svg", multi_x, multi_series, multi_names, multi_cfg)) {
+        std::cerr << "multi line chart failed\n";
+        return 1;
+    }
+
+    ChartConfig grouped_cfg = cfg;
+    grouped_cfg.height = 420;
+    grouped_cfg.title = "Grouped Bars by Month";
+    const std::vector<double> grouped_a = {55, 80, 50, 65, 70, 55};
+    const std::vector<double> grouped_b = {84, 98, 90, 86, 80, 73};
+    if (!create_grouped_bar_chart(
+            "examples/charts/grouped_bar_chart.svg", months, grouped_a, grouped_b, grouped_cfg)) {
+        std::cerr << "grouped bar chart failed\n";
+        return 1;
+    }
+
+    ChartConfig progress_cfg = cfg;
+    progress_cfg.height = 280;
+    progress_cfg.title = "Progress Bars";
+    if (!create_horizontal_progress_chart(
+            "examples/charts/horizontal_progress_chart.svg", {"Pipeline A", "Pipeline B"}, {62, 41}, progress_cfg)) {
+        std::cerr << "horizontal progress chart failed\n";
+        return 1;
+    }
+
+    ChartConfig ranked_cfg = cfg;
+    ranked_cfg.height = 500;
+    ranked_cfg.title = "Group Ranking";
+    const std::vector<std::string> rank_labels = {"Group 1", "Group 2", "Group 3", "Group 4", "Group 5", "Group 6"};
+    const std::vector<double> rank_values = {100, 78, 72, 56, 43, 22};
+    if (!create_horizontal_ranked_bar_chart(
+            "examples/charts/horizontal_ranked_bar_chart.svg", rank_labels, rank_values, ranked_cfg)) {
+        std::cerr << "horizontal ranked bar chart failed\n";
+        return 1;
+    }
+
     ChartConfig showcase_cfg = cfg;
     showcase_cfg.title = "Theme Reference Panel";
     if (!create_theme_showcase("examples/charts/theme_showcase.svg", showcase_cfg)) {
