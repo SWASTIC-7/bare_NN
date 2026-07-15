@@ -1,0 +1,399 @@
+.version 8.0
+.target sm_70
+.address_size 64
+.extern .shared .align 4 .b8 smem[];
+
+.visible .entry thread_tiled_ptx(
+          .param .u64 c_addr,
+          .param .u64 a_addr,
+          .param .u64 b_addr,
+          .param .u32 M,
+          .param .u32 N,
+          .param .u32 K,
+          .param .u32 BT_M,
+          .param .u32 BT_N,
+          .param .u32 BT_K,
+          .param .u32 WT_X,
+          .param .u32 WT_Y,
+          .param .u32 TT_X,
+          .param .u32 TT_Y)
+{
+    .reg .pred p;
+    .reg .u64 c_ptr, a_ptr, b_ptr;
+    .reg .u32 M_val, N_val, K_val;
+    .reg .u64 sh_A, sh_B;
+    .reg .u64 offset64;
+    .reg .u32 BT_M_val, BT_N_val, BT_K_val;
+    .reg .u32 WT_X_val, WT_Y_val;
+    .reg .u32 TT_X_val, TT_Y_val;
+    .reg .u32 block_row, block_col;
+    .reg .u32 block_m_base, block_n_base;
+    .reg .u32 a_tile_elems, b_tile_elems;
+    .reg .u32 ntidx;
+    .reg .u32 warp_id, lane_id;
+    .reg .u32 warp_tiles_per_row, warp_row, warp_col;
+    .reg .u32 threads_per_row;
+    .reg .u32 row, col;
+    .reg .u32 i, k, rr, cc;
+    .reg .u32 temp, offset, load_idx;
+    .reg .f32 sum, a_val, b_val;
+    .reg .u32 inner_row_C, inner_col_C;
+    .reg .u32 inner_row_A, inner_col_A;
+    .reg .u32 inner_row_B, inner_col_B;
+    .reg .u32 thread_row_base, thread_col_base;
+    .reg .u32 global_row, global_col;
+    .reg .u32 a_row_t, b_col_t;
+    .reg .u32 sh_A_size;
+    .reg .u64 addr_a, addr_b, addr_c;
+    .reg .u64 addr_sh_A, addr_sh_B;
+    .reg .u32 tidx;
+    // accumulators value[TT_Y][TT_X] and fragments reg_A[TT_Y], reg_B[TT_X]
+    // kept in local memory because TT_X/TT_Y are runtime params (capped at 8)
+    .reg .u64 addr_val, addr_regA, addr_regB;
+    .local .align 4 .b8 value[256];
+    .local .align 4 .b8 reg_A[32];
+    .local .align 4 .b8 reg_B[32];
+
+    ld.param.u64        c_ptr, [c_addr];  // address of matrix C on global memory
+    ld.param.u64        a_ptr, [a_addr];  // address of matrix A on global memory
+    ld.param.u64        b_ptr, [b_addr];  // address of matrix B on global memory
+    ld.param.u32        M_val, [M];
+    ld.param.u32        N_val, [N];
+    ld.param.u32        K_val, [K];
+    ld.param.u32        BT_M_val, [BT_M];
+    ld.param.u32        BT_N_val, [BT_N];
+    ld.param.u32        BT_K_val, [BT_K];
+    ld.param.u32        WT_X_val, [WT_X];
+    ld.param.u32        WT_Y_val, [WT_Y];
+    ld.param.u32        TT_X_val, [TT_X];
+    ld.param.u32        TT_Y_val, [TT_Y];
+
+
+    //     const uint block_row = blockIdx.y;
+    //     const uint block_col = blockIdx.x;
+    //     const uint block_m_base = block_row * BT_M_val;
+    //     const uint block_n_base = block_col * BT_N_val;
+    mov.u32             block_row, %ctaid.y;
+    mov.u32             block_col, %ctaid.x;
+    mul.lo.u32          block_m_base, block_row, BT_M_val;
+    mul.lo.u32          block_n_base, block_col, BT_N_val;
+    mov.u32             tidx, %tid.x;
+    mov.u32             ntidx, %ntid.x;
+
+    // const uint warp_id = thread_id / 32;
+    // const uint lane_id = thread_id % 32;
+    shr.u32             warp_id, tidx, 5;
+    and.b32             lane_id, tidx, 31;
+
+    // const uint threads_per_row = BT_N / TT_X;
+    // const uint warp_tiles_per_row = threads_per_row / WT_X;
+    div.u32             threads_per_row, BT_N_val, TT_X_val;
+    div.u32             warp_tiles_per_row, threads_per_row, WT_X_val;
+
+    // const uint warp_row = warp_id / warp_tiles_per_row;
+    // const uint warp_col = warp_id % warp_tiles_per_row;
+    div.u32             warp_row, warp_id, warp_tiles_per_row;
+    rem.u32             warp_col, warp_id, warp_tiles_per_row;
+
+    // dividing and modulo to get inner row and column indices within the tile
+    // by no of columns in the respective tile
+    // const uint inner_row = warp_row * WT_Y + lane_id / WT_X;
+    // const uint inner_col = warp_col * WT_X + lane_id % WT_X;
+    div.u32             inner_row_C, lane_id, WT_X_val; // this is for matrix C
+    mul.lo.u32          temp, warp_row, WT_Y_val;
+    add.u32             inner_row_C, temp, inner_row_C;
+
+    rem.u32             inner_col_C, lane_id, WT_X_val;     // this is for matrix C
+    mul.lo.u32          temp, warp_col, WT_X_val;
+    add.u32             inner_col_C, temp, inner_col_C;
+
+
+    //     const uint thread_row_base = inner_row_C * TT_Y;
+    //     const uint thread_col_base = inner_col_C * TT_X;
+    mul.lo.u32          thread_row_base, inner_row_C, TT_Y_val;
+    mul.lo.u32          thread_col_base, inner_col_C, TT_X_val;
+
+    add.u32             row, block_m_base, thread_row_base;
+    add.u32             col, block_n_base, thread_col_base;
+
+    //  __shared__ float sh_A[TILE_WIDTH][TILE_WIDTH];
+    // __shared__ float sh_B[TILE_WIDTH][TILE_WIDTH];
+    mov.u64 sh_A, smem;
+
+    mul.lo.u32          sh_A_size, BT_M_val, BT_K_val;
+    mov.u32             a_tile_elems, sh_A_size;
+    mul.lo.u32          b_tile_elems, BT_K_val, BT_N_val;
+    shl.b32             sh_A_size, sh_A_size, 2;  // size in bytes (each float is 4 bytes)
+    cvt.u64.u32         offset64, sh_A_size;
+    add.u64             sh_B, sh_A, offset64;
+
+
+    //     float value[TT_Y][TT_X] = {0};   (init once, persists across the tile loop)
+    mov.u32             rr, 0;
+Init_R:
+    setp.ge.u32         p, rr, TT_Y_val;
+    @p bra              Init_R_end;
+    mov.u32             cc, 0;
+Init_C:
+    setp.ge.u32         p, cc, TT_X_val;
+    @p bra              Init_C_end;
+    mul.lo.u32          offset, rr, TT_X_val;
+    add.u32             offset, offset, cc;
+    shl.b32             offset, offset, 2;
+    cvt.u64.u32         offset64, offset;
+    mov.u64             addr_val, value;
+    add.u64             addr_val, addr_val, offset64;
+    mov.f32             sum, 0f00000000;
+    st.local.f32        [addr_val], sum;
+    add.u32             cc, cc, 1;
+    bra                 Init_C;
+Init_C_end:
+    add.u32             rr, rr, 1;
+    bra                 Init_R;
+Init_R_end:
+
+    mov.u32             i, 0;
+Tile_loop:
+    setp.ge.u32         p, i, K_val;
+    @p bra              Tile_loop_end;
+
+
+    //     for (int load_idx = threadIdx.x; load_idx < BT_M * BT_K; load_idx += blockDim.x)
+    //         sh_A[load_idx / BT_K][load_idx % BT_K] = A[block_m + load_idx/BT_K][i + load_idx%BT_K]
+    mov.u32             load_idx, tidx;
+Load_A_loop:
+    setp.ge.u32         p, load_idx, a_tile_elems;
+    @p bra              Load_A_loop_end;
+
+    div.u32             inner_row_A, load_idx, BT_K_val;
+    rem.u32             inner_col_A, load_idx, BT_K_val;
+
+    add.u32             global_row, block_m_base, inner_row_A;
+    add.u32             global_col, i, inner_col_A;
+
+    setp.ge.u32         p, global_row, M_val;
+    @p bra              A_zero;
+    setp.ge.u32         p, global_col, K_val;
+    @p bra              A_zero;
+
+    mul.lo.u32          offset, global_row, K_val;
+    add.u32             offset, offset, global_col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_a, a_ptr, offset64;
+    ld.global.f32       a_val, [addr_a];
+    bra                 A_store;
+
+A_zero:
+    mov.f32             a_val, 0f00000000;
+
+A_store:
+    mul.lo.u32          offset, inner_row_A, BT_K_val;
+    add.u32             offset, offset, inner_col_A;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh_A, sh_A, offset64;
+    st.shared.f32       [addr_sh_A], a_val;
+
+    add.u32             load_idx, load_idx, ntidx;
+    bra                 Load_A_loop;
+Load_A_loop_end:
+
+    //     for (int load_idx = threadIdx.x; load_idx < BT_K * BT_N; load_idx += blockDim.x)
+    //         sh_B[load_idx / BT_N][load_idx % BT_N] = B[i + load_idx/BT_N][block_n + load_idx%BT_N]
+    mov.u32             load_idx, tidx;
+Load_B_loop:
+    setp.ge.u32         p, load_idx, b_tile_elems;
+    @p bra              Load_B_loop_end;
+
+    div.u32             inner_row_B, load_idx, BT_N_val;
+    rem.u32             inner_col_B, load_idx, BT_N_val;
+
+    add.u32             global_row, i, inner_row_B;
+    add.u32             global_col, block_n_base, inner_col_B;
+
+    setp.ge.u32         p, global_row, K_val;
+    @p bra              B_zero;
+    setp.ge.u32         p, global_col, N_val;
+    @p bra              B_zero;
+
+    mul.lo.u32          offset, global_row, N_val;
+    add.u32             offset, offset, global_col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_b, b_ptr, offset64;
+    ld.global.f32       b_val, [addr_b];
+    bra                 B_store;
+
+B_zero:
+    mov.f32             b_val, 0f00000000;
+
+B_store:
+    mul.lo.u32          offset, inner_row_B, BT_N_val;
+    add.u32             offset, offset, inner_col_B;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh_B, sh_B, offset64;
+    st.shared.f32       [addr_sh_B], b_val;
+
+    add.u32             load_idx, load_idx, ntidx;
+    bra                 Load_B_loop;
+Load_B_loop_end:
+
+    bar.sync 0;
+
+
+    // for (int k = 0; k < BT_K; k++) {
+    //     for (int rr = 0; rr < TT_Y; rr++) reg_A[rr] = sh_A[thread_row_base + rr][k];
+    //     for (int cc = 0; cc < TT_X; cc++) reg_B[cc] = sh_B[k][thread_col_base + cc];
+    //     for (int rr = 0; rr < TT_Y; rr++)
+    //         for (int cc = 0; cc < TT_X; cc++)
+    //             value[rr][cc] += reg_A[rr] * reg_B[cc];
+    // }
+    mov.u32             k, 0;
+K_loop:
+    setp.ge.u32         p, k, BT_K_val;
+    @p bra              K_loop_end;
+
+    // reg_A[rr] = sh_A[(thread_row_base + rr) * BT_K + k]
+    mov.u32             rr, 0;
+LoadRegA:
+    setp.ge.u32         p, rr, TT_Y_val;
+    @p bra              LoadRegA_end;
+    add.u32             a_row_t, thread_row_base, rr;
+    setp.ge.u32         p, a_row_t, BT_M_val;
+    @p bra              RegA_zero;
+    mul.lo.u32          offset, a_row_t, BT_K_val;
+    add.u32             offset, offset, k;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh_A, sh_A, offset64;
+    ld.shared.f32       a_val, [addr_sh_A];
+    bra                 RegA_store;
+RegA_zero:
+    mov.f32             a_val, 0f00000000;
+RegA_store:
+    shl.b32             offset, rr, 2;
+    cvt.u64.u32         offset64, offset;
+    mov.u64             addr_regA, reg_A;
+    add.u64             addr_regA, addr_regA, offset64;
+    st.local.f32        [addr_regA], a_val;
+    add.u32             rr, rr, 1;
+    bra                 LoadRegA;
+LoadRegA_end:
+
+    // reg_B[cc] = sh_B[k * BT_N + (thread_col_base + cc)]
+    mov.u32             cc, 0;
+LoadRegB:
+    setp.ge.u32         p, cc, TT_X_val;
+    @p bra              LoadRegB_end;
+    add.u32             b_col_t, thread_col_base, cc;
+    setp.ge.u32         p, b_col_t, BT_N_val;
+    @p bra              RegB_zero;
+    mul.lo.u32          offset, k, BT_N_val;
+    add.u32             offset, offset, b_col_t;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh_B, sh_B, offset64;
+    ld.shared.f32       b_val, [addr_sh_B];
+    bra                 RegB_store;
+RegB_zero:
+    mov.f32             b_val, 0f00000000;
+RegB_store:
+    shl.b32             offset, cc, 2;
+    cvt.u64.u32         offset64, offset;
+    mov.u64             addr_regB, reg_B;
+    add.u64             addr_regB, addr_regB, offset64;
+    st.local.f32        [addr_regB], b_val;
+    add.u32             cc, cc, 1;
+    bra                 LoadRegB;
+LoadRegB_end:
+
+    // value[rr][cc] += reg_A[rr] * reg_B[cc]
+    mov.u32             rr, 0;
+Fma_R:
+    setp.ge.u32         p, rr, TT_Y_val;
+    @p bra              Fma_R_end;
+    shl.b32             offset, rr, 2;
+    cvt.u64.u32         offset64, offset;
+    mov.u64             addr_regA, reg_A;
+    add.u64             addr_regA, addr_regA, offset64;
+    ld.local.f32        a_val, [addr_regA];
+    mov.u32             cc, 0;
+Fma_C:
+    setp.ge.u32         p, cc, TT_X_val;
+    @p bra              Fma_C_end;
+    shl.b32             offset, cc, 2;
+    cvt.u64.u32         offset64, offset;
+    mov.u64             addr_regB, reg_B;
+    add.u64             addr_regB, addr_regB, offset64;
+    ld.local.f32        b_val, [addr_regB];
+
+    mul.lo.u32          offset, rr, TT_X_val;
+    add.u32             offset, offset, cc;
+    shl.b32             offset, offset, 2;
+    cvt.u64.u32         offset64, offset;
+    mov.u64             addr_val, value;
+    add.u64             addr_val, addr_val, offset64;
+    ld.local.f32        sum, [addr_val];
+    fma.rn.f32          sum, a_val, b_val, sum;
+    st.local.f32        [addr_val], sum;
+
+    add.u32             cc, cc, 1;
+    bra                 Fma_C;
+Fma_C_end:
+    add.u32             rr, rr, 1;
+    bra                 Fma_R;
+Fma_R_end:
+
+    add.u32             k, k, 1;
+    bra                 K_loop;
+K_loop_end:
+
+    bar.sync 0;
+    add.u32             i, i, BT_K_val;
+    bra                 Tile_loop;
+Tile_loop_end:
+
+    //     for (int rr = 0; rr < TT_Y; rr++)
+    //         for (int cc = 0; cc < TT_X; cc++)
+    //             C[(row + rr) * N + (col + cc)] = value[rr][cc];
+    mov.u32             rr, 0;
+Store_R:
+    setp.ge.u32         p, rr, TT_Y_val;
+    @p bra              Store_R_end;
+    add.u32             global_row, row, rr;
+    setp.ge.u32         p, global_row, M_val;
+    @p bra              Store_R_next;
+    mov.u32             cc, 0;
+Store_C:
+    setp.ge.u32         p, cc, TT_X_val;
+    @p bra              Store_C_end;
+    add.u32             global_col, col, cc;
+    setp.ge.u32         p, global_col, N_val;
+    @p bra              Store_C_end;
+
+    mul.lo.u32          offset, rr, TT_X_val;
+    add.u32             offset, offset, cc;
+    shl.b32             offset, offset, 2;
+    cvt.u64.u32         offset64, offset;
+    mov.u64             addr_val, value;
+    add.u64             addr_val, addr_val, offset64;
+    ld.local.f32        sum, [addr_val];
+
+    mul.lo.u32          offset, global_row, N_val;
+    add.u32             offset, offset, global_col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.f32       [addr_c], sum;
+
+    add.u32             cc, cc, 1;
+    bra                 Store_C;
+Store_C_end:
+Store_R_next:
+    add.u32             rr, rr, 1;
+    bra                 Store_R;
+Store_R_end:
+    ret;
+}

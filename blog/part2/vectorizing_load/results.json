@@ -1,0 +1,7 @@
+{
+  "ptx_scalar": 1707.5369050981635,
+  "ptx_vectorized": 3263.5419373510736,
+  "cuda_vectorized": 4391.021905201437,
+  "triton": 4871.0,
+  "cublas_fp32": 4937.7
+}

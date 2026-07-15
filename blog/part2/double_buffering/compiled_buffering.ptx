@@ -1,0 +1,370 @@
+.version 8.0
+.target sm_70
+.address_size 64
+.extern .shared .align 16 .b8 smem[];      // .align 16 : required for .v4.f32 (128-bit) access
+
+// Double-buffered version (register-staged prefetch, the classic pre-cp.async form).
+// Two shared buffers ping-pong. Inside the tile loop we:
+//   1) issue the NEXT tile's global loads into registers pa/pb   (memory latency starts)
+//   2) compute the CURRENT tile from buffer 'cur'                (hides that latency)
+//   3) store pa/pb into buffer 'nxt' (data has arrived by now)
+// so the global-load latency overlaps the FMAs. One bar.sync per tile (down from two).
+//   shared layout per buffer:  sh_A[BT_K][lda] (transposed, lda = BT_M+4)  then  sh_B[BT_K][BT_N]
+//   total shared = 2 * (BT_K*lda + BT_K*BT_N) * 4 bytes
+// Requires each thread to load <= 1 float4 of A and of B  (i.e. blockDim.x >= BT_M*BT_K/4 and >= BT_K*BT_N/4).
+// Assumes M,N,K are multiples of the block tile and of 4 (so every .v4 access is 16-byte aligned).
+
+.visible .entry thread_tiled_ptx(
+          .param .u64 c_addr,
+          .param .u64 a_addr,
+          .param .u64 b_addr,
+          .param .u32 M,
+          .param .u32 N,
+          .param .u32 K,
+          .param .u32 BT_M,
+          .param .u32 BT_N,
+          .param .u32 BT_K,
+          .param .u32 WT_X,
+          .param .u32 WT_Y,
+          .param .u32 TT_X,
+          .param .u32 TT_Y)
+{
+    .reg .pred p, pA, pB;
+    .reg .u64 c_ptr, a_ptr, b_ptr;
+    .reg .u32 M_val, N_val, K_val;
+    .reg .u64 offset64, stride64;
+    .reg .u32 BT_M_val, BT_N_val, BT_K_val;
+    .reg .u32 WT_X_val, WT_Y_val;
+    .reg .u32 TT_X_val, TT_Y_val;
+    .reg .u32 block_row, block_col;
+    .reg .u32 block_m_base, block_n_base;
+    .reg .u32 a_tile_vecs, b_tile_vecs;      // a_tile_vecs = BT_M*BT_K/4 , b_tile_vecs = BT_K*BT_N/4
+    .reg .u32 bk_div4, bn_div4;              // bk_div4 = BT_K/4 , bn_div4 = BT_N/4
+    .reg .u32 lda;                           // padded leading dim of transposed sh_A = BT_M + 4
+    .reg .u32 ntidx;
+    .reg .u32 warp_id, lane_id;
+    .reg .u32 warp_tiles_per_row, warp_row, warp_col;
+    .reg .u32 threads_per_row;
+    .reg .u32 row, col;
+    .reg .u32 i, k;
+    .reg .u32 temp, offset;
+    .reg .u32 inner_row_C, inner_col_C;
+    .reg .u32 thread_row_base, thread_col_base;
+    .reg .u32 g_row;
+    .reg .u32 aA_row, aA_colk, bB_row, bB_coln;   // this thread's (constant) load coords for A and B
+    .reg .u32 half_A_bytes, half_B_bytes, buf_bytes;
+    .reg .u64 addr_a, addr_b, addr_c, addr_sh;
+    .reg .u32 tidx, load_off;
+    // double-buffer pointers: cur = read side (compute) , nxt = write side (prefetch store)
+    .reg .u64 cur_A, cur_B, nxt_A, nxt_B;
+    .reg .u64 half_A_bytes64, buf_bytes64, temp64;
+    // pa0..pa3 / pb0..pb3 : prefetched next tile held in registers across the compute
+    .reg .f32 pa0, pa1, pa2, pa3;
+    .reg .f32 pb0, pb1, pb2, pb3;
+    // a0..a3 = reg_A[4] ; b0..b3 = reg_B[4] ; c00..c33 = value[4][4]
+    .reg .f32 a0, a1, a2, a3;
+    .reg .f32 b0, b1, b2, b3;
+    .reg .f32 c00, c01, c02, c03;
+    .reg .f32 c10, c11, c12, c13;
+    .reg .f32 c20, c21, c22, c23;
+    .reg .f32 c30, c31, c32, c33;
+
+    ld.param.u64        c_ptr, [c_addr];  // address of matrix C on global memory
+    ld.param.u64        a_ptr, [a_addr];  // address of matrix A on global memory
+    ld.param.u64        b_ptr, [b_addr];  // address of matrix B on global memory
+    ld.param.u32        M_val, [M];
+    ld.param.u32        N_val, [N];
+    ld.param.u32        K_val, [K];
+    // BAKED tile dims (were ld.param) -> compile-time constants so ptxas can
+    // fold div/rem into shifts, fold addresses into immediates, and FULLY UNROLL
+    // the k loop (trip count BT_K = 16 is now known). M/N/K stay runtime.
+    mov.u32             BT_M_val, 64;    // BT_M
+    mov.u32             BT_N_val, 64;    // BT_N
+    mov.u32             BT_K_val, 16;    // BT_K
+    mov.u32             WT_X_val, 8;     // WT_X
+    mov.u32             WT_Y_val, 4;     // WT_Y
+    mov.u32             TT_X_val, 4;     // TT_X
+    mov.u32             TT_Y_val, 4;     // TT_Y
+
+    //     const uint block_row = blockIdx.y;
+    //     const uint block_col = blockIdx.x;
+    //     const uint block_m_base = block_row * BT_M_val;
+    //     const uint block_n_base = block_col * BT_N_val;
+    mov.u32             block_row, %ctaid.y;
+    mov.u32             block_col, %ctaid.x;
+    mul.lo.u32          block_m_base, block_row, BT_M_val;
+    mul.lo.u32          block_n_base, block_col, BT_N_val;
+    mov.u32             tidx, %tid.x;
+    mov.u32             ntidx, %ntid.x;
+
+    // const uint warp_id = thread_id / 32;
+    // const uint lane_id = thread_id % 32;
+    shr.u32             warp_id, tidx, 5;
+    and.b32             lane_id, tidx, 31;
+
+    // const uint threads_per_row = BT_N / TT_X;
+    // const uint warp_tiles_per_row = threads_per_row / WT_X;
+    div.u32             threads_per_row, BT_N_val, TT_X_val;
+    div.u32             warp_tiles_per_row, threads_per_row, WT_X_val;
+
+    // const uint warp_row = warp_id / warp_tiles_per_row;
+    // const uint warp_col = warp_id % warp_tiles_per_row;
+    div.u32             warp_row, warp_id, warp_tiles_per_row;
+    rem.u32             warp_col, warp_id, warp_tiles_per_row;
+
+    // dividing and modulo to get inner row and column indices within the tile
+    // by no of columns in the respective tile
+    // const uint inner_row = warp_row * WT_Y + lane_id / WT_X;
+    // const uint inner_col = warp_col * WT_X + lane_id % WT_X;
+    div.u32             inner_row_C, lane_id, WT_X_val;
+    mul.lo.u32          temp, warp_row, WT_Y_val;
+    add.u32             inner_row_C, temp, inner_row_C;
+    rem.u32             inner_col_C, lane_id, WT_X_val;
+    mul.lo.u32          temp, warp_col, WT_X_val;
+    add.u32             inner_col_C, temp, inner_col_C;
+
+    //     const uint thread_row_base = inner_row_C * TT_Y;
+    //     const uint thread_col_base = inner_col_C * TT_X;
+    mul.lo.u32          thread_row_base, inner_row_C, TT_Y_val;
+    mul.lo.u32          thread_col_base, inner_col_C, TT_X_val;
+
+    //     int row = block_m_base + thread_row_base;
+    //     int col = block_n_base + thread_col_base;
+    add.u32             row, block_m_base, thread_row_base;
+    add.u32             col, block_n_base, thread_col_base;
+
+    // lda = BT_M + 4   (pad the transposed sh_A leading dim so a column stride != 32*n banks)
+    add.u32             lda, BT_M_val, 4;
+
+    // buffer byte sizes:  half_A_bytes = BT_K*lda*4 , half_B_bytes = BT_K*BT_N*4 , buf_bytes = both
+    mul.lo.u32          half_A_bytes, lda, BT_K_val;
+    shl.b32             half_A_bytes, half_A_bytes, 2;
+    mul.lo.u32          half_B_bytes, BT_K_val, BT_N_val;
+    shl.b32             half_B_bytes, half_B_bytes, 2;
+    add.u32             buf_bytes, half_A_bytes, half_B_bytes;
+    cvt.u64.u32         half_A_bytes64, half_A_bytes;
+    cvt.u64.u32         buf_bytes64, buf_bytes;
+
+    // buffer 0 : cur_A = smem , cur_B = cur_A + half_A_bytes
+    // buffer 1 : nxt_A = smem + buf_bytes , nxt_B = nxt_A + half_A_bytes
+    mov.u64             cur_A, smem;
+    add.u64             cur_B, cur_A, half_A_bytes64;
+    add.u64             nxt_A, cur_A, buf_bytes64;
+    add.u64             nxt_B, nxt_A, half_A_bytes64;
+
+    // a_tile_vecs = BT_M*BT_K / 4 ; b_tile_vecs = BT_K*BT_N / 4   (number of float4 groups)
+    mul.lo.u32          a_tile_vecs, BT_M_val, BT_K_val;
+    shr.u32             a_tile_vecs, a_tile_vecs, 2;
+    mul.lo.u32          b_tile_vecs, BT_K_val, BT_N_val;
+    shr.u32             b_tile_vecs, b_tile_vecs, 2;
+    // bk_div4 = BT_K / 4 ; bn_div4 = BT_N / 4
+    shr.u32             bk_div4, BT_K_val, 2;
+    shr.u32             bn_div4, BT_N_val, 2;
+    // stride64 = lda * 4  (byte stride between rows of padded transposed sh_A)
+    shl.b32             temp, lda, 2;
+    cvt.u64.u32         stride64, temp;
+
+    // this thread's fixed float4 coords:  A group tid -> (aA_row, aA_colk) ,  B group tid -> (bB_row, bB_coln)
+    // pA = (tid < a_tile_vecs) , pB = (tid < b_tile_vecs)   (does this thread load a float4 at all?)
+    div.u32             aA_row, tidx, bk_div4;
+    rem.u32             temp, tidx, bk_div4;
+    shl.b32             aA_colk, temp, 2;
+    setp.lt.u32         pA, tidx, a_tile_vecs;
+    div.u32             bB_row, tidx, bn_div4;
+    rem.u32             temp, tidx, bn_div4;
+    shl.b32             bB_coln, temp, 2;
+    setp.lt.u32         pB, tidx, b_tile_vecs;
+
+    //     float value[4][4] = {0};   (init once, persists across the tile loop)
+    mov.f32             c00, 0f00000000;  mov.f32 c01, 0f00000000;  mov.f32 c02, 0f00000000;  mov.f32 c03, 0f00000000;
+    mov.f32             c10, 0f00000000;  mov.f32 c11, 0f00000000;  mov.f32 c12, 0f00000000;  mov.f32 c13, 0f00000000;
+    mov.f32             c20, 0f00000000;  mov.f32 c21, 0f00000000;  mov.f32 c22, 0f00000000;  mov.f32 c23, 0f00000000;
+    mov.f32             c30, 0f00000000;  mov.f32 c31, 0f00000000;  mov.f32 c32, 0f00000000;  mov.f32 c33, 0f00000000;
+
+    // ===== prologue: load tile @ K-offset 0 into buffer 'cur' (global load -> regs -> shared) =====
+    mov.u32             load_off, 0;
+    // A: pa = A[block_m_base + aA_row][load_off + aA_colk]
+    add.u32             g_row, block_m_base, aA_row;
+    mul.lo.u32          offset, g_row, K_val;
+    add.u32             offset, offset, load_off;
+    add.u32             offset, offset, aA_colk;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_a, a_ptr, offset64;
+    @pA ld.global.v4.f32  {pa0, pa1, pa2, pa3}, [addr_a];
+    // store transposed into cur_A : cur_A[aA_colk + j][aA_row]
+    mul.lo.u32          offset, aA_colk, lda;
+    add.u32             offset, offset, aA_row;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, cur_A, offset64;
+    @pA st.shared.f32   [addr_sh], pa0;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa1;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa2;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa3;
+    // B: pb = B[load_off + bB_row][block_n_base + bB_coln]  -> cur_B[bB_row][bB_coln]
+    add.u32             g_row, load_off, bB_row;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, block_n_base;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_b, b_ptr, offset64;
+    @pB ld.global.v4.f32  {pb0, pb1, pb2, pb3}, [addr_b];
+    mul.lo.u32          offset, bB_row, BT_N_val;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, cur_B, offset64;
+    @pB st.shared.v4.f32  [addr_sh], {pb0, pb1, pb2, pb3};
+
+    mov.u32             i, 0;
+Tile_loop:
+    bar.sync 0;                              // buffer 'cur' is filled & visible to the whole block
+
+    // ---- prefetch-LOAD next tile @ (i + BT_K) into registers pa/pb  (issue global loads, don't wait) ----
+    add.u32             temp, i, BT_K_val;
+    setp.ge.u32         p, temp, K_val;
+    @p bra              Skip_prefetch_load;
+    mov.u32             load_off, temp;
+    // A: pa = A[block_m_base + aA_row][load_off + aA_colk]
+    add.u32             g_row, block_m_base, aA_row;
+    mul.lo.u32          offset, g_row, K_val;
+    add.u32             offset, offset, load_off;
+    add.u32             offset, offset, aA_colk;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_a, a_ptr, offset64;
+    @pA ld.global.v4.f32  {pa0, pa1, pa2, pa3}, [addr_a];
+    // B: pb = B[load_off + bB_row][block_n_base + bB_coln]
+    add.u32             g_row, load_off, bB_row;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, block_n_base;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_b, b_ptr, offset64;
+    @pB ld.global.v4.f32  {pb0, pb1, pb2, pb3}, [addr_b];
+Skip_prefetch_load:
+
+    // ---- compute CURRENT tile from buffer 'cur'  (overlaps the prefetch global loads above) ----
+    // for (int k = 0; k < BT_K; k++)   value[rr][cc] += reg_A[rr] * reg_B[cc]
+    mov.u32             k, 0;
+K_loop:
+    setp.ge.u32         p, k, BT_K_val;
+    @p bra              K_loop_end;
+
+    // {a0,a1,a2,a3} = cur_A[k][thread_row_base + 0..3]   (addr = cur_A + (k*lda + thread_row_base)*4)
+    mul.lo.u32          offset, k, lda;
+    add.u32             offset, offset, thread_row_base;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, cur_A, offset64;
+    ld.shared.v4.f32    {a0, a1, a2, a3}, [addr_sh];
+
+    // {b0,b1,b2,b3} = cur_B[k][thread_col_base + 0..3]   (addr = cur_B + (k*BT_N + thread_col_base)*4)
+    mul.lo.u32          offset, k, BT_N_val;
+    add.u32             offset, offset, thread_col_base;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, cur_B, offset64;
+    ld.shared.v4.f32    {b0, b1, b2, b3}, [addr_sh];
+
+    // value[rr][cc] += reg_A[rr] * reg_B[cc]
+    fma.rn.f32          c00, a0, b0, c00;
+    fma.rn.f32          c01, a0, b1, c01;
+    fma.rn.f32          c02, a0, b2, c02;
+    fma.rn.f32          c03, a0, b3, c03;
+    fma.rn.f32          c10, a1, b0, c10;
+    fma.rn.f32          c11, a1, b1, c11;
+    fma.rn.f32          c12, a1, b2, c12;
+    fma.rn.f32          c13, a1, b3, c13;
+    fma.rn.f32          c20, a2, b0, c20;
+    fma.rn.f32          c21, a2, b1, c21;
+    fma.rn.f32          c22, a2, b2, c22;
+    fma.rn.f32          c23, a2, b3, c23;
+    fma.rn.f32          c30, a3, b0, c30;
+    fma.rn.f32          c31, a3, b1, c31;
+    fma.rn.f32          c32, a3, b2, c32;
+    fma.rn.f32          c33, a3, b3, c33;
+
+    add.u32             k, k, 1;
+    bra                 K_loop;
+K_loop_end:
+
+    // ---- prefetch-STORE registers pa/pb into buffer 'nxt' (global data has arrived during compute) ----
+    add.u32             temp, i, BT_K_val;
+    setp.ge.u32         p, temp, K_val;
+    @p bra              Skip_prefetch_store;
+    // A transposed into nxt_A : nxt_A[aA_colk + j][aA_row]
+    mul.lo.u32          offset, aA_colk, lda;
+    add.u32             offset, offset, aA_row;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, nxt_A, offset64;
+    @pA st.shared.f32   [addr_sh], pa0;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa1;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa2;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa3;
+    // B into nxt_B : nxt_B[bB_row][bB_coln]
+    mul.lo.u32          offset, bB_row, BT_N_val;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, nxt_B, offset64;
+    @pB st.shared.v4.f32  [addr_sh], {pb0, pb1, pb2, pb3};
+Skip_prefetch_store:
+
+    // swap buffers: cur <-> nxt   (the tile just stored into nxt becomes the read side next iteration)
+    mov.u64             temp64, cur_A;  mov.u64 cur_A, nxt_A;  mov.u64 nxt_A, temp64;
+    mov.u64             temp64, cur_B;  mov.u64 cur_B, nxt_B;  mov.u64 nxt_B, temp64;
+
+    add.u32             i, i, BT_K_val;
+    setp.lt.u32         p, i, K_val;
+    @p bra              Tile_loop;
+
+    //  for (rr = 0..3)  C[row + rr][col + 0..3] = {c{rr}0, c{rr}1, c{rr}2, c{rr}3}   (st.global.v4.f32 per row)
+    // C[(row + 0)*N + col + 0..3] = {c00,c01,c02,c03}
+    add.u32             g_row, row, 0;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c00, c01, c02, c03};
+
+    // C[(row + 1)*N + col + 0..3] = {c10,c11,c12,c13}
+    add.u32             g_row, row, 1;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c10, c11, c12, c13};
+
+    // C[(row + 2)*N + col + 0..3] = {c20,c21,c22,c23}
+    add.u32             g_row, row, 2;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c20, c21, c22, c23};
+
+    // C[(row + 3)*N + col + 0..3] = {c30,c31,c32,c33}
+    add.u32             g_row, row, 3;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c30, c31, c32, c33};
+
+    ret;
+}

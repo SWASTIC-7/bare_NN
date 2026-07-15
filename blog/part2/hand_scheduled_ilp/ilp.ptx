@@ -1,0 +1,669 @@
+.version 8.0
+.target sm_70
+.address_size 64
+.extern .shared .align 16 .b8 smem[];      // .align 16 : required for .v4.f32 (128-bit) access
+
+// Double-buffered, SPECIALIZED to CUDA's best config: BT_M=64 BT_N=128 BT_K=8 WT_X=8 WT_Y=4 TT_X=4 TT_Y=8.
+// Thread tile is 8 x 4  ->  32 accumulators (c00..c73) ; reg_A = 8 values (two .v4 loads) , reg_B = 4 (one .v4).
+// All tile dims baked as compile-time constants (M/N/K stay runtime) so ptxas fully unrolls + folds addresses.
+//   shared per buffer: sh_A[BT_K][lda] (transposed, lda=BT_M+4) then sh_B[BT_K][BT_N] ; total = 2*(BT_K*lda+BT_K*BT_N)*4
+// Requires blockDim.x >= BT_M*BT_K/4 and >= BT_K*BT_N/4 (<=1 float4 per thread). Assumes M,N,K multiples of tile and 4.
+
+.visible .entry thread_tiled_ptx(
+          .param .u64 c_addr,
+          .param .u64 a_addr,
+          .param .u64 b_addr,
+          .param .u32 M,
+          .param .u32 N,
+          .param .u32 K,
+          .param .u32 BT_M,
+          .param .u32 BT_N,
+          .param .u32 BT_K,
+          .param .u32 WT_X,
+          .param .u32 WT_Y,
+          .param .u32 TT_X,
+          .param .u32 TT_Y)
+{
+    .reg .pred p, pA, pB;
+    .reg .u64 c_ptr, a_ptr, b_ptr;
+    .reg .u32 M_val, N_val, K_val;
+    .reg .u64 offset64, stride64;
+    .reg .u32 BT_M_val, BT_N_val, BT_K_val;
+    .reg .u32 WT_X_val, WT_Y_val;
+    .reg .u32 TT_X_val, TT_Y_val;
+    .reg .u32 block_row, block_col;
+    .reg .u32 block_m_base, block_n_base;
+    .reg .u32 a_tile_vecs, b_tile_vecs;
+    .reg .u32 bk_div4, bn_div4;
+    .reg .u32 lda;
+    .reg .u32 ntidx;
+    .reg .u32 warp_id, lane_id;
+    .reg .u32 warp_tiles_per_row, warp_row, warp_col;
+    .reg .u32 threads_per_row;
+    .reg .u32 row, col;
+    .reg .u32 i, k;
+    .reg .u32 temp, offset;
+    .reg .u32 inner_row_C, inner_col_C;
+    .reg .u32 thread_row_base, thread_col_base;
+    .reg .u32 g_row;
+    .reg .u32 aA_row, aA_colk, bB_row, bB_coln;
+    .reg .u32 half_A_bytes, half_B_bytes, buf_bytes;
+    .reg .u64 addr_a, addr_b, addr_c, addr_sh;
+    .reg .u32 tidx, load_off;
+    .reg .u64 cur_A, cur_B, nxt_A, nxt_B;
+    .reg .u64 half_A_bytes64, buf_bytes64, temp64;
+    .reg .u64 addrA, addrB, strideB64;
+    .reg .f32 pa0, pa1, pa2, pa3;
+    .reg .f32 pb0, pb1, pb2, pb3;
+    // a0..a7 = reg_A[8] ; b0..b3 = reg_B[4] ; c00..c73 = value[8][4]
+    .reg .f32 a0, a1, a2, a3, a4, a5, a6, a7;
+    .reg .f32 b0, b1, b2, b3;
+    .reg .f32 an0, an1, an2, an3, an4, an5, an6, an7;   // ping-pong reg fragments for k-loop ILP
+    .reg .f32 bn0, bn1, bn2, bn3;
+    .reg .f32 c00, c01, c02, c03;
+    .reg .f32 c10, c11, c12, c13;
+    .reg .f32 c20, c21, c22, c23;
+    .reg .f32 c30, c31, c32, c33;
+    .reg .f32 c40, c41, c42, c43;
+    .reg .f32 c50, c51, c52, c53;
+    .reg .f32 c60, c61, c62, c63;
+    .reg .f32 c70, c71, c72, c73;
+
+    ld.param.u64        c_ptr, [c_addr];  // address of matrix C on global memory
+    ld.param.u64        a_ptr, [a_addr];  // address of matrix A on global memory
+    ld.param.u64        b_ptr, [b_addr];  // address of matrix B on global memory
+    ld.param.u32        M_val, [M];
+    ld.param.u32        N_val, [N];
+    ld.param.u32        K_val, [K];
+    // BAKED tile dims -> compile-time constants (full unroll + address folding). M/N/K stay runtime.
+    mov.u32             BT_M_val, 64;    // BT_M
+    mov.u32             BT_N_val, 128;   // BT_N
+    mov.u32             BT_K_val, 8;     // BT_K
+    mov.u32             WT_X_val, 8;     // WT_X
+    mov.u32             WT_Y_val, 4;     // WT_Y
+    mov.u32             TT_X_val, 4;     // TT_X (thread tile cols)
+    mov.u32             TT_Y_val, 8;     // TT_Y (thread tile rows)
+
+    //     const uint block_row = blockIdx.y;
+    //     const uint block_col = blockIdx.x;
+    //     const uint block_m_base = block_row * BT_M_val;
+    //     const uint block_n_base = block_col * BT_N_val;
+    mov.u32             block_row, %ctaid.y;
+    mov.u32             block_col, %ctaid.x;
+    mul.lo.u32          block_m_base, block_row, BT_M_val;
+    mul.lo.u32          block_n_base, block_col, BT_N_val;
+    mov.u32             tidx, %tid.x;
+    mov.u32             ntidx, %ntid.x;
+
+    // const uint warp_id = thread_id / 32;
+    // const uint lane_id = thread_id % 32;
+    shr.u32             warp_id, tidx, 5;
+    and.b32             lane_id, tidx, 31;
+
+    // const uint threads_per_row = BT_N / TT_X;
+    // const uint warp_tiles_per_row = threads_per_row / WT_X;
+    div.u32             threads_per_row, BT_N_val, TT_X_val;
+    div.u32             warp_tiles_per_row, threads_per_row, WT_X_val;
+
+    // const uint warp_row = warp_id / warp_tiles_per_row;
+    // const uint warp_col = warp_id % warp_tiles_per_row;
+    div.u32             warp_row, warp_id, warp_tiles_per_row;
+    rem.u32             warp_col, warp_id, warp_tiles_per_row;
+
+    // dividing and modulo to get inner row and column indices within the tile
+    // by no of columns in the respective tile
+    // const uint inner_row = warp_row * WT_Y + lane_id / WT_X;
+    // const uint inner_col = warp_col * WT_X + lane_id % WT_X;
+    div.u32             inner_row_C, lane_id, WT_X_val;
+    mul.lo.u32          temp, warp_row, WT_Y_val;
+    add.u32             inner_row_C, temp, inner_row_C;
+    rem.u32             inner_col_C, lane_id, WT_X_val;
+    mul.lo.u32          temp, warp_col, WT_X_val;
+    add.u32             inner_col_C, temp, inner_col_C;
+
+    //     const uint thread_row_base = inner_row_C * TT_Y;   (TT_Y = 8)
+    //     const uint thread_col_base = inner_col_C * TT_X;   (TT_X = 4)
+    mul.lo.u32          thread_row_base, inner_row_C, TT_Y_val;
+    mul.lo.u32          thread_col_base, inner_col_C, TT_X_val;
+
+    //     int row = block_m_base + thread_row_base;
+    //     int col = block_n_base + thread_col_base;
+    add.u32             row, block_m_base, thread_row_base;
+    add.u32             col, block_n_base, thread_col_base;
+
+    // lda = BT_M + 4   (pad the transposed sh_A leading dim so a column stride != 32*n banks)
+    add.u32             lda, BT_M_val, 4;
+
+    // buffer byte sizes:  half_A_bytes = BT_K*lda*4 , half_B_bytes = BT_K*BT_N*4 , buf_bytes = both
+    mul.lo.u32          half_A_bytes, lda, BT_K_val;
+    shl.b32             half_A_bytes, half_A_bytes, 2;
+    mul.lo.u32          half_B_bytes, BT_K_val, BT_N_val;
+    shl.b32             half_B_bytes, half_B_bytes, 2;
+    add.u32             buf_bytes, half_A_bytes, half_B_bytes;
+    cvt.u64.u32         half_A_bytes64, half_A_bytes;
+    cvt.u64.u32         buf_bytes64, buf_bytes;
+
+    // buffer 0 : cur_A = smem , cur_B = cur_A + half_A_bytes
+    // buffer 1 : nxt_A = smem + buf_bytes , nxt_B = nxt_A + half_A_bytes
+    mov.u64             cur_A, smem;
+    add.u64             cur_B, cur_A, half_A_bytes64;
+    add.u64             nxt_A, cur_A, buf_bytes64;
+    add.u64             nxt_B, nxt_A, half_A_bytes64;
+
+    // a_tile_vecs = BT_M*BT_K / 4 ; b_tile_vecs = BT_K*BT_N / 4   (number of float4 groups)
+    mul.lo.u32          a_tile_vecs, BT_M_val, BT_K_val;
+    shr.u32             a_tile_vecs, a_tile_vecs, 2;
+    mul.lo.u32          b_tile_vecs, BT_K_val, BT_N_val;
+    shr.u32             b_tile_vecs, b_tile_vecs, 2;
+    // bk_div4 = BT_K / 4 ; bn_div4 = BT_N / 4
+    shr.u32             bk_div4, BT_K_val, 2;
+    shr.u32             bn_div4, BT_N_val, 2;
+    // stride64 = lda * 4  (byte stride between rows of padded transposed sh_A)
+    shl.b32             temp, lda, 2;
+    cvt.u64.u32         stride64, temp;
+    shl.b32             temp, BT_N_val, 2;
+    cvt.u64.u32         strideB64, temp;
+
+    // this thread's fixed float4 coords:  A group tid -> (aA_row, aA_colk) ,  B group tid -> (bB_row, bB_coln)
+    // pA = (tid < a_tile_vecs) , pB = (tid < b_tile_vecs)   (does this thread load a float4 at all?)
+    div.u32             aA_row, tidx, bk_div4;
+    rem.u32             temp, tidx, bk_div4;
+    shl.b32             aA_colk, temp, 2;
+    setp.lt.u32         pA, tidx, a_tile_vecs;
+    div.u32             bB_row, tidx, bn_div4;
+    rem.u32             temp, tidx, bn_div4;
+    shl.b32             bB_coln, temp, 2;
+    setp.lt.u32         pB, tidx, b_tile_vecs;
+
+    //     float value[8][4] = {0};   (init once, persists across the tile loop)
+    mov.f32             c00, 0f00000000;  mov.f32 c01, 0f00000000;  mov.f32 c02, 0f00000000;  mov.f32 c03, 0f00000000;
+    mov.f32             c10, 0f00000000;  mov.f32 c11, 0f00000000;  mov.f32 c12, 0f00000000;  mov.f32 c13, 0f00000000;
+    mov.f32             c20, 0f00000000;  mov.f32 c21, 0f00000000;  mov.f32 c22, 0f00000000;  mov.f32 c23, 0f00000000;
+    mov.f32             c30, 0f00000000;  mov.f32 c31, 0f00000000;  mov.f32 c32, 0f00000000;  mov.f32 c33, 0f00000000;
+    mov.f32             c40, 0f00000000;  mov.f32 c41, 0f00000000;  mov.f32 c42, 0f00000000;  mov.f32 c43, 0f00000000;
+    mov.f32             c50, 0f00000000;  mov.f32 c51, 0f00000000;  mov.f32 c52, 0f00000000;  mov.f32 c53, 0f00000000;
+    mov.f32             c60, 0f00000000;  mov.f32 c61, 0f00000000;  mov.f32 c62, 0f00000000;  mov.f32 c63, 0f00000000;
+    mov.f32             c70, 0f00000000;  mov.f32 c71, 0f00000000;  mov.f32 c72, 0f00000000;  mov.f32 c73, 0f00000000;
+
+    // ===== prologue: load tile @ K-offset 0 into buffer 'cur' (global load -> regs -> shared) =====
+    mov.u32             load_off, 0;
+    // A: pa = A[block_m_base + aA_row][load_off + aA_colk]
+    add.u32             g_row, block_m_base, aA_row;
+    mul.lo.u32          offset, g_row, K_val;
+    add.u32             offset, offset, load_off;
+    add.u32             offset, offset, aA_colk;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_a, a_ptr, offset64;
+    @pA ld.global.v4.f32  {pa0, pa1, pa2, pa3}, [addr_a];
+    // store transposed into cur_A : cur_A[aA_colk + j][aA_row]
+    mul.lo.u32          offset, aA_colk, lda;
+    add.u32             offset, offset, aA_row;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, cur_A, offset64;
+    @pA st.shared.f32   [addr_sh], pa0;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa1;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa2;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa3;
+    // B: pb = B[load_off + bB_row][block_n_base + bB_coln]  -> cur_B[bB_row][bB_coln]
+    add.u32             g_row, load_off, bB_row;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, block_n_base;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_b, b_ptr, offset64;
+    @pB ld.global.v4.f32  {pb0, pb1, pb2, pb3}, [addr_b];
+    mul.lo.u32          offset, bB_row, BT_N_val;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, cur_B, offset64;
+    @pB st.shared.v4.f32  [addr_sh], {pb0, pb1, pb2, pb3};
+
+    mov.u32             i, 0;
+Tile_loop:
+    bar.sync 0;                              // buffer 'cur' is filled & visible to the whole block
+
+    // ---- prefetch-LOAD next tile @ (i + BT_K) into registers pa/pb  (issue global loads, don't wait) ----
+    add.u32             temp, i, BT_K_val;
+    setp.ge.u32         p, temp, K_val;
+    @p bra              Skip_prefetch_load;
+    mov.u32             load_off, temp;
+    // A: pa = A[block_m_base + aA_row][load_off + aA_colk]
+    add.u32             g_row, block_m_base, aA_row;
+    mul.lo.u32          offset, g_row, K_val;
+    add.u32             offset, offset, load_off;
+    add.u32             offset, offset, aA_colk;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_a, a_ptr, offset64;
+    @pA ld.global.v4.f32  {pa0, pa1, pa2, pa3}, [addr_a];
+    // B: pb = B[load_off + bB_row][block_n_base + bB_coln]
+    add.u32             g_row, load_off, bB_row;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, block_n_base;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_b, b_ptr, offset64;
+    @pB ld.global.v4.f32  {pb0, pb1, pb2, pb3}, [addr_b];
+Skip_prefetch_load:
+
+    // ---- compute CURRENT tile : software-pipelined k-loop (fully unrolled, register ping-pong) ----
+    // reg_A/reg_B for k+1 are loaded BEFORE the FMAs for k -> shared-load latency overlaps the math (ILP)
+    shl.b32             offset, thread_row_base, 2;
+    cvt.u64.u32         offset64, offset;
+    add.u64             addrA, cur_A, offset64;
+    shl.b32             offset, thread_col_base, 2;
+    cvt.u64.u32         offset64, offset;
+    add.u64             addrB, cur_B, offset64;
+    ld.shared.v4.f32    {a0, a1, a2, a3}, [addrA];
+    ld.shared.v4.f32    {a4, a5, a6, a7}, [addrA+16];
+    ld.shared.v4.f32    {b0, b1, b2, b3}, [addrB];
+    add.u64             addrA, addrA, stride64;      // advance to k=1
+    add.u64             addrB, addrB, strideB64;
+    ld.shared.v4.f32    {an0, an1, an2, an3}, [addrA];
+    ld.shared.v4.f32    {an4, an5, an6, an7}, [addrA+16];
+    ld.shared.v4.f32    {bn0, bn1, bn2, bn3}, [addrB];
+    // FMAs for k=0  (using a*/b*)
+    fma.rn.f32          c00, a0, b0, c00;
+    fma.rn.f32          c01, a0, b1, c01;
+    fma.rn.f32          c02, a0, b2, c02;
+    fma.rn.f32          c03, a0, b3, c03;
+    fma.rn.f32          c10, a1, b0, c10;
+    fma.rn.f32          c11, a1, b1, c11;
+    fma.rn.f32          c12, a1, b2, c12;
+    fma.rn.f32          c13, a1, b3, c13;
+    fma.rn.f32          c20, a2, b0, c20;
+    fma.rn.f32          c21, a2, b1, c21;
+    fma.rn.f32          c22, a2, b2, c22;
+    fma.rn.f32          c23, a2, b3, c23;
+    fma.rn.f32          c30, a3, b0, c30;
+    fma.rn.f32          c31, a3, b1, c31;
+    fma.rn.f32          c32, a3, b2, c32;
+    fma.rn.f32          c33, a3, b3, c33;
+    fma.rn.f32          c40, a4, b0, c40;
+    fma.rn.f32          c41, a4, b1, c41;
+    fma.rn.f32          c42, a4, b2, c42;
+    fma.rn.f32          c43, a4, b3, c43;
+    fma.rn.f32          c50, a5, b0, c50;
+    fma.rn.f32          c51, a5, b1, c51;
+    fma.rn.f32          c52, a5, b2, c52;
+    fma.rn.f32          c53, a5, b3, c53;
+    fma.rn.f32          c60, a6, b0, c60;
+    fma.rn.f32          c61, a6, b1, c61;
+    fma.rn.f32          c62, a6, b2, c62;
+    fma.rn.f32          c63, a6, b3, c63;
+    fma.rn.f32          c70, a7, b0, c70;
+    fma.rn.f32          c71, a7, b1, c71;
+    fma.rn.f32          c72, a7, b2, c72;
+    fma.rn.f32          c73, a7, b3, c73;
+    add.u64             addrA, addrA, stride64;      // advance to k=2
+    add.u64             addrB, addrB, strideB64;
+    ld.shared.v4.f32    {a0, a1, a2, a3}, [addrA];
+    ld.shared.v4.f32    {a4, a5, a6, a7}, [addrA+16];
+    ld.shared.v4.f32    {b0, b1, b2, b3}, [addrB];
+    // FMAs for k=1  (using an*/bn*)
+    fma.rn.f32          c00, an0, bn0, c00;
+    fma.rn.f32          c01, an0, bn1, c01;
+    fma.rn.f32          c02, an0, bn2, c02;
+    fma.rn.f32          c03, an0, bn3, c03;
+    fma.rn.f32          c10, an1, bn0, c10;
+    fma.rn.f32          c11, an1, bn1, c11;
+    fma.rn.f32          c12, an1, bn2, c12;
+    fma.rn.f32          c13, an1, bn3, c13;
+    fma.rn.f32          c20, an2, bn0, c20;
+    fma.rn.f32          c21, an2, bn1, c21;
+    fma.rn.f32          c22, an2, bn2, c22;
+    fma.rn.f32          c23, an2, bn3, c23;
+    fma.rn.f32          c30, an3, bn0, c30;
+    fma.rn.f32          c31, an3, bn1, c31;
+    fma.rn.f32          c32, an3, bn2, c32;
+    fma.rn.f32          c33, an3, bn3, c33;
+    fma.rn.f32          c40, an4, bn0, c40;
+    fma.rn.f32          c41, an4, bn1, c41;
+    fma.rn.f32          c42, an4, bn2, c42;
+    fma.rn.f32          c43, an4, bn3, c43;
+    fma.rn.f32          c50, an5, bn0, c50;
+    fma.rn.f32          c51, an5, bn1, c51;
+    fma.rn.f32          c52, an5, bn2, c52;
+    fma.rn.f32          c53, an5, bn3, c53;
+    fma.rn.f32          c60, an6, bn0, c60;
+    fma.rn.f32          c61, an6, bn1, c61;
+    fma.rn.f32          c62, an6, bn2, c62;
+    fma.rn.f32          c63, an6, bn3, c63;
+    fma.rn.f32          c70, an7, bn0, c70;
+    fma.rn.f32          c71, an7, bn1, c71;
+    fma.rn.f32          c72, an7, bn2, c72;
+    fma.rn.f32          c73, an7, bn3, c73;
+    add.u64             addrA, addrA, stride64;      // advance to k=3
+    add.u64             addrB, addrB, strideB64;
+    ld.shared.v4.f32    {an0, an1, an2, an3}, [addrA];
+    ld.shared.v4.f32    {an4, an5, an6, an7}, [addrA+16];
+    ld.shared.v4.f32    {bn0, bn1, bn2, bn3}, [addrB];
+    // FMAs for k=2  (using a*/b*)
+    fma.rn.f32          c00, a0, b0, c00;
+    fma.rn.f32          c01, a0, b1, c01;
+    fma.rn.f32          c02, a0, b2, c02;
+    fma.rn.f32          c03, a0, b3, c03;
+    fma.rn.f32          c10, a1, b0, c10;
+    fma.rn.f32          c11, a1, b1, c11;
+    fma.rn.f32          c12, a1, b2, c12;
+    fma.rn.f32          c13, a1, b3, c13;
+    fma.rn.f32          c20, a2, b0, c20;
+    fma.rn.f32          c21, a2, b1, c21;
+    fma.rn.f32          c22, a2, b2, c22;
+    fma.rn.f32          c23, a2, b3, c23;
+    fma.rn.f32          c30, a3, b0, c30;
+    fma.rn.f32          c31, a3, b1, c31;
+    fma.rn.f32          c32, a3, b2, c32;
+    fma.rn.f32          c33, a3, b3, c33;
+    fma.rn.f32          c40, a4, b0, c40;
+    fma.rn.f32          c41, a4, b1, c41;
+    fma.rn.f32          c42, a4, b2, c42;
+    fma.rn.f32          c43, a4, b3, c43;
+    fma.rn.f32          c50, a5, b0, c50;
+    fma.rn.f32          c51, a5, b1, c51;
+    fma.rn.f32          c52, a5, b2, c52;
+    fma.rn.f32          c53, a5, b3, c53;
+    fma.rn.f32          c60, a6, b0, c60;
+    fma.rn.f32          c61, a6, b1, c61;
+    fma.rn.f32          c62, a6, b2, c62;
+    fma.rn.f32          c63, a6, b3, c63;
+    fma.rn.f32          c70, a7, b0, c70;
+    fma.rn.f32          c71, a7, b1, c71;
+    fma.rn.f32          c72, a7, b2, c72;
+    fma.rn.f32          c73, a7, b3, c73;
+    add.u64             addrA, addrA, stride64;      // advance to k=4
+    add.u64             addrB, addrB, strideB64;
+    ld.shared.v4.f32    {a0, a1, a2, a3}, [addrA];
+    ld.shared.v4.f32    {a4, a5, a6, a7}, [addrA+16];
+    ld.shared.v4.f32    {b0, b1, b2, b3}, [addrB];
+    // FMAs for k=3  (using an*/bn*)
+    fma.rn.f32          c00, an0, bn0, c00;
+    fma.rn.f32          c01, an0, bn1, c01;
+    fma.rn.f32          c02, an0, bn2, c02;
+    fma.rn.f32          c03, an0, bn3, c03;
+    fma.rn.f32          c10, an1, bn0, c10;
+    fma.rn.f32          c11, an1, bn1, c11;
+    fma.rn.f32          c12, an1, bn2, c12;
+    fma.rn.f32          c13, an1, bn3, c13;
+    fma.rn.f32          c20, an2, bn0, c20;
+    fma.rn.f32          c21, an2, bn1, c21;
+    fma.rn.f32          c22, an2, bn2, c22;
+    fma.rn.f32          c23, an2, bn3, c23;
+    fma.rn.f32          c30, an3, bn0, c30;
+    fma.rn.f32          c31, an3, bn1, c31;
+    fma.rn.f32          c32, an3, bn2, c32;
+    fma.rn.f32          c33, an3, bn3, c33;
+    fma.rn.f32          c40, an4, bn0, c40;
+    fma.rn.f32          c41, an4, bn1, c41;
+    fma.rn.f32          c42, an4, bn2, c42;
+    fma.rn.f32          c43, an4, bn3, c43;
+    fma.rn.f32          c50, an5, bn0, c50;
+    fma.rn.f32          c51, an5, bn1, c51;
+    fma.rn.f32          c52, an5, bn2, c52;
+    fma.rn.f32          c53, an5, bn3, c53;
+    fma.rn.f32          c60, an6, bn0, c60;
+    fma.rn.f32          c61, an6, bn1, c61;
+    fma.rn.f32          c62, an6, bn2, c62;
+    fma.rn.f32          c63, an6, bn3, c63;
+    fma.rn.f32          c70, an7, bn0, c70;
+    fma.rn.f32          c71, an7, bn1, c71;
+    fma.rn.f32          c72, an7, bn2, c72;
+    fma.rn.f32          c73, an7, bn3, c73;
+    add.u64             addrA, addrA, stride64;      // advance to k=5
+    add.u64             addrB, addrB, strideB64;
+    ld.shared.v4.f32    {an0, an1, an2, an3}, [addrA];
+    ld.shared.v4.f32    {an4, an5, an6, an7}, [addrA+16];
+    ld.shared.v4.f32    {bn0, bn1, bn2, bn3}, [addrB];
+    // FMAs for k=4  (using a*/b*)
+    fma.rn.f32          c00, a0, b0, c00;
+    fma.rn.f32          c01, a0, b1, c01;
+    fma.rn.f32          c02, a0, b2, c02;
+    fma.rn.f32          c03, a0, b3, c03;
+    fma.rn.f32          c10, a1, b0, c10;
+    fma.rn.f32          c11, a1, b1, c11;
+    fma.rn.f32          c12, a1, b2, c12;
+    fma.rn.f32          c13, a1, b3, c13;
+    fma.rn.f32          c20, a2, b0, c20;
+    fma.rn.f32          c21, a2, b1, c21;
+    fma.rn.f32          c22, a2, b2, c22;
+    fma.rn.f32          c23, a2, b3, c23;
+    fma.rn.f32          c30, a3, b0, c30;
+    fma.rn.f32          c31, a3, b1, c31;
+    fma.rn.f32          c32, a3, b2, c32;
+    fma.rn.f32          c33, a3, b3, c33;
+    fma.rn.f32          c40, a4, b0, c40;
+    fma.rn.f32          c41, a4, b1, c41;
+    fma.rn.f32          c42, a4, b2, c42;
+    fma.rn.f32          c43, a4, b3, c43;
+    fma.rn.f32          c50, a5, b0, c50;
+    fma.rn.f32          c51, a5, b1, c51;
+    fma.rn.f32          c52, a5, b2, c52;
+    fma.rn.f32          c53, a5, b3, c53;
+    fma.rn.f32          c60, a6, b0, c60;
+    fma.rn.f32          c61, a6, b1, c61;
+    fma.rn.f32          c62, a6, b2, c62;
+    fma.rn.f32          c63, a6, b3, c63;
+    fma.rn.f32          c70, a7, b0, c70;
+    fma.rn.f32          c71, a7, b1, c71;
+    fma.rn.f32          c72, a7, b2, c72;
+    fma.rn.f32          c73, a7, b3, c73;
+    add.u64             addrA, addrA, stride64;      // advance to k=6
+    add.u64             addrB, addrB, strideB64;
+    ld.shared.v4.f32    {a0, a1, a2, a3}, [addrA];
+    ld.shared.v4.f32    {a4, a5, a6, a7}, [addrA+16];
+    ld.shared.v4.f32    {b0, b1, b2, b3}, [addrB];
+    // FMAs for k=5  (using an*/bn*)
+    fma.rn.f32          c00, an0, bn0, c00;
+    fma.rn.f32          c01, an0, bn1, c01;
+    fma.rn.f32          c02, an0, bn2, c02;
+    fma.rn.f32          c03, an0, bn3, c03;
+    fma.rn.f32          c10, an1, bn0, c10;
+    fma.rn.f32          c11, an1, bn1, c11;
+    fma.rn.f32          c12, an1, bn2, c12;
+    fma.rn.f32          c13, an1, bn3, c13;
+    fma.rn.f32          c20, an2, bn0, c20;
+    fma.rn.f32          c21, an2, bn1, c21;
+    fma.rn.f32          c22, an2, bn2, c22;
+    fma.rn.f32          c23, an2, bn3, c23;
+    fma.rn.f32          c30, an3, bn0, c30;
+    fma.rn.f32          c31, an3, bn1, c31;
+    fma.rn.f32          c32, an3, bn2, c32;
+    fma.rn.f32          c33, an3, bn3, c33;
+    fma.rn.f32          c40, an4, bn0, c40;
+    fma.rn.f32          c41, an4, bn1, c41;
+    fma.rn.f32          c42, an4, bn2, c42;
+    fma.rn.f32          c43, an4, bn3, c43;
+    fma.rn.f32          c50, an5, bn0, c50;
+    fma.rn.f32          c51, an5, bn1, c51;
+    fma.rn.f32          c52, an5, bn2, c52;
+    fma.rn.f32          c53, an5, bn3, c53;
+    fma.rn.f32          c60, an6, bn0, c60;
+    fma.rn.f32          c61, an6, bn1, c61;
+    fma.rn.f32          c62, an6, bn2, c62;
+    fma.rn.f32          c63, an6, bn3, c63;
+    fma.rn.f32          c70, an7, bn0, c70;
+    fma.rn.f32          c71, an7, bn1, c71;
+    fma.rn.f32          c72, an7, bn2, c72;
+    fma.rn.f32          c73, an7, bn3, c73;
+    add.u64             addrA, addrA, stride64;      // advance to k=7
+    add.u64             addrB, addrB, strideB64;
+    ld.shared.v4.f32    {an0, an1, an2, an3}, [addrA];
+    ld.shared.v4.f32    {an4, an5, an6, an7}, [addrA+16];
+    ld.shared.v4.f32    {bn0, bn1, bn2, bn3}, [addrB];
+    // FMAs for k=6  (using a*/b*)
+    fma.rn.f32          c00, a0, b0, c00;
+    fma.rn.f32          c01, a0, b1, c01;
+    fma.rn.f32          c02, a0, b2, c02;
+    fma.rn.f32          c03, a0, b3, c03;
+    fma.rn.f32          c10, a1, b0, c10;
+    fma.rn.f32          c11, a1, b1, c11;
+    fma.rn.f32          c12, a1, b2, c12;
+    fma.rn.f32          c13, a1, b3, c13;
+    fma.rn.f32          c20, a2, b0, c20;
+    fma.rn.f32          c21, a2, b1, c21;
+    fma.rn.f32          c22, a2, b2, c22;
+    fma.rn.f32          c23, a2, b3, c23;
+    fma.rn.f32          c30, a3, b0, c30;
+    fma.rn.f32          c31, a3, b1, c31;
+    fma.rn.f32          c32, a3, b2, c32;
+    fma.rn.f32          c33, a3, b3, c33;
+    fma.rn.f32          c40, a4, b0, c40;
+    fma.rn.f32          c41, a4, b1, c41;
+    fma.rn.f32          c42, a4, b2, c42;
+    fma.rn.f32          c43, a4, b3, c43;
+    fma.rn.f32          c50, a5, b0, c50;
+    fma.rn.f32          c51, a5, b1, c51;
+    fma.rn.f32          c52, a5, b2, c52;
+    fma.rn.f32          c53, a5, b3, c53;
+    fma.rn.f32          c60, a6, b0, c60;
+    fma.rn.f32          c61, a6, b1, c61;
+    fma.rn.f32          c62, a6, b2, c62;
+    fma.rn.f32          c63, a6, b3, c63;
+    fma.rn.f32          c70, a7, b0, c70;
+    fma.rn.f32          c71, a7, b1, c71;
+    fma.rn.f32          c72, a7, b2, c72;
+    fma.rn.f32          c73, a7, b3, c73;
+    // FMAs for k=7  (using an*/bn*)
+    fma.rn.f32          c00, an0, bn0, c00;
+    fma.rn.f32          c01, an0, bn1, c01;
+    fma.rn.f32          c02, an0, bn2, c02;
+    fma.rn.f32          c03, an0, bn3, c03;
+    fma.rn.f32          c10, an1, bn0, c10;
+    fma.rn.f32          c11, an1, bn1, c11;
+    fma.rn.f32          c12, an1, bn2, c12;
+    fma.rn.f32          c13, an1, bn3, c13;
+    fma.rn.f32          c20, an2, bn0, c20;
+    fma.rn.f32          c21, an2, bn1, c21;
+    fma.rn.f32          c22, an2, bn2, c22;
+    fma.rn.f32          c23, an2, bn3, c23;
+    fma.rn.f32          c30, an3, bn0, c30;
+    fma.rn.f32          c31, an3, bn1, c31;
+    fma.rn.f32          c32, an3, bn2, c32;
+    fma.rn.f32          c33, an3, bn3, c33;
+    fma.rn.f32          c40, an4, bn0, c40;
+    fma.rn.f32          c41, an4, bn1, c41;
+    fma.rn.f32          c42, an4, bn2, c42;
+    fma.rn.f32          c43, an4, bn3, c43;
+    fma.rn.f32          c50, an5, bn0, c50;
+    fma.rn.f32          c51, an5, bn1, c51;
+    fma.rn.f32          c52, an5, bn2, c52;
+    fma.rn.f32          c53, an5, bn3, c53;
+    fma.rn.f32          c60, an6, bn0, c60;
+    fma.rn.f32          c61, an6, bn1, c61;
+    fma.rn.f32          c62, an6, bn2, c62;
+    fma.rn.f32          c63, an6, bn3, c63;
+    fma.rn.f32          c70, an7, bn0, c70;
+    fma.rn.f32          c71, an7, bn1, c71;
+    fma.rn.f32          c72, an7, bn2, c72;
+    fma.rn.f32          c73, an7, bn3, c73;
+K_loop_end:
+
+    // ---- prefetch-STORE registers pa/pb into buffer 'nxt' (global data has arrived during compute) ----
+    add.u32             temp, i, BT_K_val;
+    setp.ge.u32         p, temp, K_val;
+    @p bra              Skip_prefetch_store;
+    // A transposed into nxt_A : nxt_A[aA_colk + j][aA_row]
+    mul.lo.u32          offset, aA_colk, lda;
+    add.u32             offset, offset, aA_row;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, nxt_A, offset64;
+    @pA st.shared.f32   [addr_sh], pa0;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa1;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa2;
+    add.u64             addr_sh, addr_sh, stride64;
+    @pA st.shared.f32   [addr_sh], pa3;
+    // B into nxt_B : nxt_B[bB_row][bB_coln]
+    mul.lo.u32          offset, bB_row, BT_N_val;
+    add.u32             offset, offset, bB_coln;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_sh, nxt_B, offset64;
+    @pB st.shared.v4.f32  [addr_sh], {pb0, pb1, pb2, pb3};
+Skip_prefetch_store:
+
+    // swap buffers: cur <-> nxt
+    mov.u64             temp64, cur_A;  mov.u64 cur_A, nxt_A;  mov.u64 nxt_A, temp64;
+    mov.u64             temp64, cur_B;  mov.u64 cur_B, nxt_B;  mov.u64 nxt_B, temp64;
+
+    add.u32             i, i, BT_K_val;
+    setp.lt.u32         p, i, K_val;
+    @p bra              Tile_loop;
+
+    //  for (rr = 0..7)  C[row + rr][col + 0..3] = {c{rr}0, c{rr}1, c{rr}2, c{rr}3}   (st.global.v4.f32 per row)
+    add.u32             g_row, row, 0;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c00, c01, c02, c03};
+
+    add.u32             g_row, row, 1;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c10, c11, c12, c13};
+
+    add.u32             g_row, row, 2;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c20, c21, c22, c23};
+
+    add.u32             g_row, row, 3;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c30, c31, c32, c33};
+
+    add.u32             g_row, row, 4;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c40, c41, c42, c43};
+
+    add.u32             g_row, row, 5;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c50, c51, c52, c53};
+
+    add.u32             g_row, row, 6;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c60, c61, c62, c63};
+
+    add.u32             g_row, row, 7;
+    mul.lo.u32          offset, g_row, N_val;
+    add.u32             offset, offset, col;
+    cvt.u64.u32         offset64, offset;
+    shl.b64             offset64, offset64, 2;
+    add.u64             addr_c, c_ptr, offset64;
+    st.global.v4.f32    [addr_c], {c70, c71, c72, c73};
+
+    ret;
+}
